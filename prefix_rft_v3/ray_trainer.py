@@ -427,7 +427,7 @@ def post_process_gen_batch(gen_batch: DataProto, pad_token_id: int, eos_token_id
         if prefix_len > 0:
             answer_prefix = prompts[i, -prefix_len:]
             prefix_attention = torch.ones(prefix_len, dtype=orig_response_attention_mask.dtype, device=prompts.device)
-            prefix_loss_mask = torch.zeros(prefix_len, dtype=orig_response_attention_mask.dtype, device=prompts.device)
+            prefix_loss_mask = torch.ones(prefix_len, dtype=orig_response_attention_mask.dtype, device=prompts.device)
         else:
             answer_prefix = torch.tensor([], dtype=prompts.dtype, device=prompts.device)
             prefix_attention = torch.tensor([], dtype=orig_response_attention_mask.dtype, device=prompts.device)
@@ -831,6 +831,8 @@ class RayPPOTrainer:
 
     def _attach_prefix_batch_metadata(self, batch: DataProto) -> dict[str, float]:
         prefix_metrics = {}
+        batch.meta_info["prefix_ctrl_low"] = -1.0
+        batch.meta_info["prefix_ctrl_high"] = -1.0
         prefix_uid = np.asarray(batch.non_tensor_batch.get("prefix_uid", []), dtype=object)
         if prefix_uid.size == 0:
             return prefix_metrics
@@ -850,8 +852,10 @@ class RayPPOTrainer:
             valid_prefix_highs = prefix_highs[prefix_highs != -1]
             if valid_prefix_lows.size > 0:
                 prefix_metrics["actor/prefix_low"] = float(np.mean(valid_prefix_lows))
+                batch.meta_info["prefix_ctrl_low"] = float(np.mean(valid_prefix_lows))
             if valid_prefix_highs.size > 0:
                 prefix_metrics["actor/prefix_high"] = float(np.mean(valid_prefix_highs))
+                batch.meta_info["prefix_ctrl_high"] = float(np.mean(valid_prefix_highs))
 
         batch.meta_info["global_step"] = self.global_steps
         return prefix_metrics

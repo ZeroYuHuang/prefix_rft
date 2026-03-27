@@ -288,3 +288,51 @@ Constraints:
 - Important caveat:
   - this is still a trainer-only stabilization patch intended to unblock runs quickly
   - actor-side prefix-specific advantage/entropy reshaping is still not migrated in this session
+
+## Implementation Update - Minimal Actor Migration
+
+- Prefix actor migration has now been started with a run-first scope, using the v2 actor logic as reference rather than trying to fork all upstream worker code.
+- Trainer-side semantic correction applied first in `prefix_rft_v3/ray_trainer.py`:
+  - prefix tokens are confirmed to be part of `responses`
+  - finalized `response_mask` now keeps prefix tokens active instead of zeroing them out
+  - `prefix_mask` is still emitted separately so actor-side logic can distinguish prefix tokens from ordinary continuation tokens
+  - batch-level `meta_info["prefix_ctrl_low"]` and `meta_info["prefix_ctrl_high"]` are now attached for actor reshaping
+- Added `prefix_rft_v3/dp_actor.py`:
+  - subclasses upstream `verl.workers.actor.dp_actor.DataParallelPPOActor`
+  - ports a minimal version of v2 `reshape_func(...)`
+  - currently supports the main prefix reshapers needed for smoke testing:
+    - `identity`
+    - `const`
+    - `entropy`
+    - `entropy_low`
+    - `entropy_op`
+    - `position`
+    - `random`
+    - `length_on_pos`
+    - `length_all_pos`
+    - `length`
+  - custom actor `update_policy(...)` now:
+    - consumes `prefix_mask` and `prefix_relpos`
+    - applies prefix-aware advantage reshaping before PPO loss
+    - supports `replace_old_log_prob`
+    - applies entropy regularization on non-prefix response tokens when `entropy_mode=response_only`
+    - otherwise keeps upstream PPO loss machinery (`get_policy_loss_fn(...)`) intact
+- Added `prefix_rft_v3/fsdp_workers.py`:
+  - subclasses upstream FSDP async worker
+  - injects minimal prefix actor knobs from `prefix_rft` config into actor/ref config
+  - swaps upstream actor/ref instances to `prefix_rft_v3.dp_actor.DataParallelPPOActor`
+- Updated `prefix_rft_v3/task_runner.py`:
+  - when `prefix_rft.enable=true` and strategy is FSDP/FSDP2, the task runner now uses `prefix_rft_v3.fsdp_workers.AsyncActorRolloutRefWorker`
+- Updated `prefix_rft_v3/config/prefix_rft_trainer.yaml` with minimal actor-facing prefix defaults:
+  - `off_adv_reshaper: entropy`
+  - `off_ent_mask_ratio_ctrl_type: const`
+  - `off_ent_mask_ratio_ctrl.kwargs.init: 0.8`
+  - `entropy_mode: response_only`
+  - `replace_old_log_prob: False`
+- Local checks completed after this actor patch:
+  - `python -m py_compile prefix_rft_v3/ray_trainer.py prefix_rft_v3/rl_dataset.py prefix_rft_v3/task_runner.py prefix_rft_v3/main.py prefix_rft_v3/dp_actor.py prefix_rft_v3/fsdp_workers.py`
+  - Hydra composition check for prefix mode with actor-specific prefix overrides
+- Remaining caveat:
+  - this is still a minimal migration on top of upstream PPO loss
+  - v2's custom off-policy clip logic from `recipe/prefix_rft_v2/core_algos.py` is not ported yet
+  - if smoke training still diverges semantically after actor updates, that custom loss path is the next likely place to migrate

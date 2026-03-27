@@ -68,6 +68,13 @@ prefix_rft:
     kwargs:
       alpha: 1.0
       beta: 1.0
+  off_adv_reshaper: entropy
+  off_ent_mask_ratio_ctrl_type: const
+  off_ent_mask_ratio_ctrl:
+    kwargs:
+      init: 0.8
+  entropy_mode: response_only
+  replace_old_log_prob: False
 
 actor_rollout_ref:
 

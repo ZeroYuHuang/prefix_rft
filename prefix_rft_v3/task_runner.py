@@ -51,8 +51,13 @@ class PrefixRFTTaskRunner:
             self.mapping[role] = "global_pool"
             return actor_rollout_cls, ray_worker_group_cls
 
+        use_prefix_worker = config.get("prefix_rft", {}).get("enable", False)
+
         if config.actor_rollout_ref.actor.strategy in {"fsdp", "fsdp2"}:
-            from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker
+            if use_prefix_worker:
+                from prefix_rft_v3.fsdp_workers import AsyncActorRolloutRefWorker
+            else:
+                from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker
 
             actor_rollout_cls = AsyncActorRolloutRefWorker
             ray_worker_group_cls = RayWorkerGroup
