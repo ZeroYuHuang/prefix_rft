@@ -149,21 +149,6 @@ class PrefixRFTDataset(Dataset):
         self._read_files_and_tokenize()
         self._create_prefix_controller()
 
-    def _dataset_apply_kwargs(self):
-        if self.dataset_num_proc > 1:
-            return {"num_proc": self.dataset_num_proc}
-        return {}
-
-    def _map_dataframe(self, function, **kwargs):
-        map_kwargs = dict(kwargs)
-        map_kwargs.update(self._dataset_apply_kwargs())
-        self.dataframe = self.dataframe.map(function, **map_kwargs)
-
-    def _filter_dataframe(self, function, **kwargs):
-        filter_kwargs = dict(kwargs)
-        filter_kwargs.update(self._dataset_apply_kwargs())
-        self.dataframe = self.dataframe.filter(function, **filter_kwargs)
-
     def _download(self, use_origin_parquet=False):
         from verl.utils.fs import copy_to_local
 
@@ -178,9 +163,9 @@ class PrefixRFTDataset(Dataset):
         for parquet_file in self.data_files:
             dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
             dataframes.append(dataframe)
-        self.dataframe: datasets.Dataset = datasets.concatenate_datasets(dataframes)
+        dataframe = datasets.concatenate_datasets(dataframes)
 
-        total = len(self.dataframe)
+        total = len(dataframe)
         if self.max_samples > 0 and self.max_samples < total:
             if self.config.get("shuffle", False):
                 seed = self.config.get("seed")
@@ -188,46 +173,36 @@ class PrefixRFTDataset(Dataset):
                 indices = rng.choice(total, size=self.max_samples, replace=False)
             else:
                 indices = np.arange(self.max_samples)
-            self.dataframe = self.dataframe.select(indices.tolist())
+            dataframe = dataframe.select(indices.tolist())
+
+        self.dataframe = [dict(example) for example in dataframe]
 
         print(f"dataset len: {len(self.dataframe)}")
-        print(f"PrefixRFTDataset preprocessing num_proc: {self.dataset_num_proc}")
         self._normalize_demo_columns_if_needed()
 
         if self.filter_overlong_prompts:
-            tokenizer = self.tokenizer
-            prompt_key = self.prompt_key
             max_prompt_length = self.filter_overlong_prompts_length
-            self._filter_dataframe(
-                lambda doc: len(tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True))
-                <= max_prompt_length,
-                desc=f"Filtering prompts longer than {max_prompt_length} tokens",
-            )
+            filtered_dataframe = []
+            for doc in self.dataframe:
+                prompt_text = self.tokenizer.apply_chat_template(doc[self.prompt_key], add_generation_prompt=True)
+                if len(prompt_text) <= max_prompt_length:
+                    filtered_dataframe.append(doc)
+            self.dataframe = filtered_dataframe
             print(f"filter dataset len: {len(self.dataframe)}")
 
-        def initialize_columns(example):
+        for example in self.dataframe:
             example["avg_rewards"] = []
             example["prefix_ratios"] = []
-            return example
-
-        def maybe_delete_demos(example):
             if np.random.choice([0, 1], p=[1 - self.demo_ratio, self.demo_ratio]) == 0:
                 example[self.demo_key] = []
                 if self.demo_corr_key in example:
                     example[self.demo_corr_key] = []
-            return example
-
-        self._map_dataframe(initialize_columns)
-        self._map_dataframe(maybe_delete_demos)
 
         if self.only_keep_dp_with_demo:
-            self._filter_dataframe(lambda x: len(x[self.demo_key]) > 0)
+            self.dataframe = [example for example in self.dataframe if len(example[self.demo_key]) > 0]
 
-        def add_unique_id(example):
+        for example in self.dataframe:
             example["uid"] = str(uuid.uuid4())
-            return example
-
-        self._map_dataframe(add_unique_id)
 
         self.uid2item_index = {}
         for i, example in enumerate(self.dataframe):
@@ -237,7 +212,10 @@ class PrefixRFTDataset(Dataset):
         self.global_step = 0
 
     def _normalize_demo_columns_if_needed(self):
-        column_names = set(self.dataframe.column_names)
+        if len(self.dataframe) == 0:
+            return
+
+        column_names = set(self.dataframe[0].keys())
         need_normalization = (self.demo_key not in column_names) or (self.demo_corr_key not in column_names)
 
         if not need_normalization:
@@ -256,7 +234,7 @@ class PrefixRFTDataset(Dataset):
         demo_key = self.demo_key
         demo_corr_key = self.demo_corr_key
 
-        def normalize_example(example):
+        for example in self.dataframe:
             demos = []
             demos_corr = []
 
@@ -299,9 +277,9 @@ class PrefixRFTDataset(Dataset):
 
             example[demo_key] = demos
             example[demo_corr_key] = demos_corr
-            return example
 
-        self._map_dataframe(normalize_example)
+    def _get_column_values(self, key):
+        return [example.get(key) for example in self.dataframe]
 
     def _create_prefix_controller(self):
         prefix_low_ctrl_cls = CTRL_MAPPING[self.config.prefix_low_ctrl_type]
@@ -361,8 +339,8 @@ class PrefixRFTDataset(Dataset):
 
     def _get_prefix_ratio(self, idx):
         return self.prefix_controller.value(
-            avg_rewards=self.dataframe["avg_rewards"],
-            prefix_ratios=self.dataframe["prefix_ratios"],
+            avg_rewards=self._get_column_values("avg_rewards"),
+            prefix_ratios=self._get_column_values("prefix_ratios"),
             data_idx=idx,
             global_step=self.global_step,
             train_reward=self.training_metrics["train_rewards"],
