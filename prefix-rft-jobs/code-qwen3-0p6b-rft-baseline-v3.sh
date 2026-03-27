@@ -89,4 +89,4 @@ TRAIN_ARGS=(
 )
 
 cd "${REPO_ROOT}"
-python3 -m prefix_rft_v3.main "${TRAIN_ARGS[@]}"
+python3 -m prefix_rft_v3.main "${TRAIN_ARGS[@]}" "$@"

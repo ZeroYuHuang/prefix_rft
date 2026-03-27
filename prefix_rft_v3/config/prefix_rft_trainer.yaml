@@ -48,6 +48,26 @@ data:
 prefix_rft:
 
   enable: False
+  demo_ratio: 1.0
+  demo_key: demos
+  demo_corr_key: demos_corr
+  total_demo_n: 1
+  num_prefix: 1
+  num_empty_prefix: 0
+  min_prefix_len: 32
+  only_keep_dp_with_demo: False
+  prefix_low_ctrl_type: const
+  prefix_low_ctrl:
+    kwargs:
+      init: 0.2
+  prefix_high_ctrl_type: const
+  prefix_high_ctrl:
+    kwargs:
+      init: 0.8
+  prefix_sampler:
+    kwargs:
+      alpha: 1.0
+      beta: 1.0
 
 actor_rollout_ref:
 

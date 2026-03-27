@@ -4,7 +4,6 @@ import socket
 import ray
 
 from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 from verl.trainer.ppo.utils import need_critic, need_reference_policy
 from verl.utils.config import validate_config
 
@@ -17,6 +16,12 @@ def _maybe_get_custom_chat_template(model_path: str) -> str | None:
     if "Qwen3" in model_path:
         return Qwen3_8B_Base_chat_template
     return None
+
+
+def _copy_config_value(value, omega_conf):
+    if omega_conf.is_config(value) or isinstance(value, (dict, list)):
+        return omega_conf.create(omega_conf.to_container(value, resolve=True))
+    return value
 
 
 @ray.remote(num_cpus=1)
@@ -151,6 +156,45 @@ class PrefixRFTTaskRunner:
             with open_dict(config.actor_rollout_ref.model):
                 config.actor_rollout_ref.model.custom_chat_template = custom_chat_template
 
+        if config.get("prefix_rft", {}).get("enable", False):
+            prefix_cfg = config.get("prefix_rft", {})
+            with open_dict(config.data):
+                if "custom_cls" not in config.data or config.data.custom_cls is None:
+                    config.data.custom_cls = {}
+                config.data.custom_cls.path = "prefix_rft_v3/rl_dataset.py"
+                config.data.custom_cls.name = "PrefixRFTDataset"
+                config.data.return_raw_chat = True
+
+                prefix_defaults = {
+                    "demo_ratio": prefix_cfg.get("demo_ratio", 1.0),
+                    "demo_key": prefix_cfg.get("demo_key", "demos"),
+                    "demo_corr_key": prefix_cfg.get("demo_corr_key", "demos_corr"),
+                    "total_demo_n": prefix_cfg.get("total_demo_n", 1),
+                    "num_prefix": prefix_cfg.get("num_prefix", 1),
+                    "num_empty_prefix": prefix_cfg.get("num_empty_prefix", 0),
+                    "min_prefix_len": prefix_cfg.get("min_prefix_len", 32),
+                    "only_keep_dp_with_demo": prefix_cfg.get("only_keep_dp_with_demo", False),
+                    "prefix_low_ctrl_type": prefix_cfg.get("prefix_low_ctrl_type", "const"),
+                    "prefix_low_ctrl": prefix_cfg.get("prefix_low_ctrl", {"kwargs": {"init": 0.2}}),
+                    "prefix_high_ctrl_type": prefix_cfg.get("prefix_high_ctrl_type", "const"),
+                    "prefix_high_ctrl": prefix_cfg.get("prefix_high_ctrl", {"kwargs": {"init": 0.8}}),
+                    "prefix_sampler": prefix_cfg.get("prefix_sampler", {"kwargs": {"alpha": 1.0, "beta": 1.0}}),
+                }
+                for key, value in prefix_defaults.items():
+                    if key not in config.data or config.data.get(key) is None:
+                        config.data[key] = _copy_config_value(value, OmegaConf)
+
+                optional_prefix_fields = (
+                    "prefix_low_ctrl_wrapper_type",
+                    "prefix_low_ctrl_wrapper",
+                    "prefix_high_ctrl_wrapper_type",
+                    "prefix_high_ctrl_wrapper",
+                )
+                for key in optional_prefix_fields:
+                    value = prefix_cfg.get(key, None)
+                    if value is not None and (key not in config.data or config.data.get(key) is None):
+                        config.data[key] = _copy_config_value(value, OmegaConf)
+
         actor_rollout_cls, ray_worker_group_cls = self.add_actor_rollout_worker(config)
         self.add_critic_worker(config)
         self.add_reward_model_resource_pool(config)
@@ -200,7 +244,17 @@ class PrefixRFTTaskRunner:
         )
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
-        trainer = RayPPOTrainer(
+        trainer_cls = None
+        if config.get("prefix_rft", {}).get("enable", False):
+            from prefix_rft_v3.ray_trainer import RayPPOTrainer as PrefixRayPPOTrainer
+
+            trainer_cls = PrefixRayPPOTrainer
+        else:
+            from verl.trainer.ppo.ray_trainer import RayPPOTrainer as VerlRayPPOTrainer
+
+            trainer_cls = VerlRayPPOTrainer
+
+        trainer = trainer_cls(
             config=config,
             tokenizer=tokenizer,
             processor=processor,
