@@ -36,6 +36,7 @@ data:
   validation_shuffle: False
   filter_overlong_prompts: True
   filter_overlong_prompts_workers: 16
+  dataset_num_proc: 1
   truncation: error
   image_key: images
   video_key: videos
@@ -246,7 +247,7 @@ reward:
 
   num_workers: 8
   custom_reward_function:
-    path: prefix_rft_v3/custom_rewards/code_r1.py
+    path: pkg://prefix_rft_v3.custom_rewards.code_r1_v2
     name: compute_score
   reward_manager:
     source: register

@@ -166,7 +166,7 @@ class PrefixRFTTaskRunner:
             with open_dict(config.data):
                 if "custom_cls" not in config.data or config.data.custom_cls is None:
                     config.data.custom_cls = {}
-                config.data.custom_cls.path = "prefix_rft_v3/rl_dataset.py"
+                config.data.custom_cls.path = "pkg://prefix_rft_v3.rl_dataset"
                 config.data.custom_cls.name = "PrefixRFTDataset"
                 config.data.return_raw_chat = True
 

@@ -130,6 +130,9 @@ class PrefixRFTDataset(Dataset):
         self.filter_overlong_prompts_length = config.get("filter_overlong_prompts_length", self.max_prompt_length)
         self.num_workers = config.get("filter_overlong_prompts_workers", max(1, os.cpu_count() // 4))
         self.num_workers = min(self.num_workers, os.cpu_count())
+        self.dataset_num_proc = int(config.get("dataset_num_proc", 1))
+        if self.dataset_num_proc < 1:
+            self.dataset_num_proc = 1
         self.need_tools_kwargs = config.get("need_tools_kwargs", False)
 
         self.demo_ratio = config.get("demo_ratio", 1.0)
@@ -145,6 +148,21 @@ class PrefixRFTDataset(Dataset):
         self._download()
         self._read_files_and_tokenize()
         self._create_prefix_controller()
+
+    def _dataset_apply_kwargs(self):
+        if self.dataset_num_proc > 1:
+            return {"num_proc": self.dataset_num_proc}
+        return {}
+
+    def _map_dataframe(self, function, **kwargs):
+        map_kwargs = dict(kwargs)
+        map_kwargs.update(self._dataset_apply_kwargs())
+        self.dataframe = self.dataframe.map(function, **map_kwargs)
+
+    def _filter_dataframe(self, function, **kwargs):
+        filter_kwargs = dict(kwargs)
+        filter_kwargs.update(self._dataset_apply_kwargs())
+        self.dataframe = self.dataframe.filter(function, **filter_kwargs)
 
     def _download(self, use_origin_parquet=False):
         from verl.utils.fs import copy_to_local
@@ -173,16 +191,16 @@ class PrefixRFTDataset(Dataset):
             self.dataframe = self.dataframe.select(indices.tolist())
 
         print(f"dataset len: {len(self.dataframe)}")
+        print(f"PrefixRFTDataset preprocessing num_proc: {self.dataset_num_proc}")
         self._normalize_demo_columns_if_needed()
 
         if self.filter_overlong_prompts:
             tokenizer = self.tokenizer
             prompt_key = self.prompt_key
             max_prompt_length = self.filter_overlong_prompts_length
-            self.dataframe = self.dataframe.filter(
+            self._filter_dataframe(
                 lambda doc: len(tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True))
                 <= max_prompt_length,
-                num_proc=self.num_workers,
                 desc=f"Filtering prompts longer than {max_prompt_length} tokens",
             )
             print(f"filter dataset len: {len(self.dataframe)}")
@@ -199,17 +217,17 @@ class PrefixRFTDataset(Dataset):
                     example[self.demo_corr_key] = []
             return example
 
-        self.dataframe = self.dataframe.map(initialize_columns, num_proc=min(16, self.num_workers))
-        self.dataframe = self.dataframe.map(maybe_delete_demos, num_proc=min(16, self.num_workers))
+        self._map_dataframe(initialize_columns)
+        self._map_dataframe(maybe_delete_demos)
 
         if self.only_keep_dp_with_demo:
-            self.dataframe = self.dataframe.filter(lambda x: len(x[self.demo_key]) > 0)
+            self._filter_dataframe(lambda x: len(x[self.demo_key]) > 0)
 
         def add_unique_id(example):
             example["uid"] = str(uuid.uuid4())
             return example
 
-        self.dataframe = self.dataframe.map(add_unique_id, num_proc=min(16, self.num_workers))
+        self._map_dataframe(add_unique_id)
 
         self.uid2item_index = {}
         for i, example in enumerate(self.dataframe):
@@ -283,7 +301,7 @@ class PrefixRFTDataset(Dataset):
             example[demo_corr_key] = demos_corr
             return example
 
-        self.dataframe = self.dataframe.map(normalize_example, num_proc=min(16, self.num_workers))
+        self._map_dataframe(normalize_example)
 
     def _create_prefix_controller(self):
         prefix_low_ctrl_cls = CTRL_MAPPING[self.config.prefix_low_ctrl_type]

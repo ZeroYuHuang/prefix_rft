@@ -336,3 +336,101 @@ Constraints:
   - this is still a minimal migration on top of upstream PPO loss
   - v2's custom off-policy clip logic from `recipe/prefix_rft_v2/core_algos.py` is not ported yet
   - if smoke training still diverges semantically after actor updates, that custom loss path is the next likely place to migrate
+
+## Next Build Plan - Baseline + Prefix-RFT Bring-Up
+
+- Immediate goal for the next build session is no longer "more migration" in the abstract; it is to make both baseline and prefix-RFT smoke runs start successfully and reach actor update.
+- The current highest-priority runtime blocker is dataset initialization multiprocessing inside `prefix_rft_v3/rl_dataset.py`:
+  - removing `filter_overlong_prompts` is not sufficient
+  - `datasets.Dataset.map(..., num_proc=...)` and `filter(..., num_proc=...)` still trigger `multiprocess`/`dill` serialization
+  - the observed failure is `TypeError: cannot pickle 'ConfigModuleInstance' object`
+  - therefore the whole prefix dataset initialization path must be treated as single-process for smoke unless proved otherwise
+
+### Runtime Facts To Preserve
+
+- Prefix controller/scheduler code itself is already present in `prefix_rft_v3/scheduler/global_step.py` and `prefix_rft_v3/rl_dataset.py`.
+- Prefix ratio sampling already calls the controller with `global_step`, so step-aware decay/rise semantics exist in principle.
+- However, the trainer does not yet keep `self.train_dataloader.dataset.global_step` synchronized with `self.global_steps`, so controller decay over training steps is not fully live yet.
+- Prefix metrics partially exist in v3 (`actor/prefix_ratio`, `actor/demo_len`, `actor/prefix_low`, `actor/prefix_high`), but v2-style observability is still incomplete.
+- The new reward implementation at `prefix_rft_v3/custom_rewards/code_r1_v2.py` should be treated as the preferred code reward path for upcoming runs.
+
+### Execution Order For The Next Build Session
+
+1. De-risk prefix dataset startup first.
+   - Update `prefix_rft_v3/rl_dataset.py` so all HF datasets preprocessing uses a single-process path for smoke.
+   - This includes every `map(..., num_proc=...)` and `filter(..., num_proc=...)` call, not just the overlong-prompt filter.
+   - Favor correctness and startup stability over preprocessing speed.
+
+2. Switch custom module loading to package paths.
+   - In `prefix_rft_v3/task_runner.py`, change the custom dataset path from file-style loading to `pkg://prefix_rft_v3.rl_dataset`.
+   - Also switch the default reward path to `pkg://prefix_rft_v3.custom_rewards.code_r1_v2`.
+   - Goal: reduce serialization/import edge cases and align with stable module import behavior.
+
+3. Finish wiring the prefix controller to live training steps.
+   - In `prefix_rft_v3/ray_trainer.py`, mirror v2 behavior by setting `self.train_dataloader.dataset.global_step = self.global_steps` after checkpoint load and after each training step.
+   - This is required for cosine/linear/delay controllers to actually change prefix length over time.
+
+4. Restore the minimum useful prefix metrics for smoke diagnosis.
+   - Add v2-style metrics that help verify prefix tokens are truly participating in training, especially:
+     - `actor/num_response_tokens`
+     - `actor/num_prefix_tokens`
+     - `actor/off_ratio`
+   - Keep existing `actor/prefix_ratio`, `actor/prefix_low`, `actor/prefix_high`, and `actor/demo_len`.
+
+5. Verify the baseline path again after the dataset/reward-path cleanup.
+   - Baseline should continue to run through the shared v3 entrypoint with `prefix_rft.enable=false`.
+   - The goal is to confirm that prefix-specific startup fixes do not regress the baseline smoke path.
+
+6. Re-run prefix-RFT smoke and focus on first-step survivability.
+   - Success criteria for the first prefix smoke are:
+     - dataset initialization no longer crashes on pickling
+     - rollout finishes
+     - reward extraction works with the finalized prefix batch
+     - first `update_actor` completes
+     - prefix metrics are visible
+     - controller-driven prefix settings change with training step when configured to decay
+
+7. Only after smoke runs are stable, port the remaining v2 custom off-policy PPO loss semantics.
+   - The main remaining semantic gap is still the v2 custom `compute_policy_loss(...)` path from `recipe/prefix_rft_v2/core_algos.py`.
+   - That later migration should cover:
+     - `prefix_mask`-aware clipping
+     - off-policy clip bounds (`clip_ratio_low_off`, `clip_ratio_high_off`)
+     - `enable_clip`
+     - prefix-specific clip metrics
+   - This is important for fidelity to v2, but it is intentionally sequenced after startup stability.
+
+### Acceptance Criteria For The Next Session
+
+- Baseline smoke starts and reaches training update without dataset startup regressions.
+- Prefix-RFT smoke starts without HF dataset pickling failures.
+- Prefix-RFT reaches first actor update with `prefix_mask`, `prefix_relpos`, `prefix_ctrl_low`, and `prefix_ctrl_high` flowing through.
+- Prefix controller behavior is live across training steps, not frozen at dataset initialization.
+- New reward path uses `code_r1_v2.py` by default for code tasks.
+- If remaining failures persist after these steps, the next debugging target should be the v2 custom off-policy policy-loss port rather than more dataset/trainer scaffolding.
+
+## Implementation Update - Startup And Metrics Pass
+
+- Implemented the dataset startup stabilization in `prefix_rft_v3/rl_dataset.py`.
+  - Added a dedicated `dataset_num_proc` knob with default `1`.
+  - All HF `Dataset.map(...)` and `Dataset.filter(...)` calls now go through single-process helpers by default.
+  - This removes the smoke-path dependency on `multiprocess` pickling for closures that capture tokenizer/config state.
+- Switched custom module loading to package imports.
+  - `prefix_rft_v3/task_runner.py` now sets the custom dataset path to `pkg://prefix_rft_v3.rl_dataset`.
+  - `prefix_rft_v3/config/prefix_rft_trainer.yaml` now points the default reward function to `pkg://prefix_rft_v3.custom_rewards.code_r1_v2`.
+  - Both launch scripts under `prefix-rft-jobs/` now override reward loading with the same package path.
+  - Added `prefix_rft_v3/custom_rewards/__init__.py` so the reward module resolves as a normal package.
+- Wired live prefix controller step updates in `prefix_rft_v3/ray_trainer.py`.
+  - Added `_sync_train_dataset_global_step()`.
+  - The trainer now syncs dataset `global_step` after checkpoint load, after training-step initialization, and after each completed step.
+- Restored prefix smoke metrics in `prefix_rft_v3/ray_trainer.py`.
+  - Added:
+    - `actor/num_response_tokens`
+    - `actor/num_prefix_tokens`
+    - `actor/off_ratio`
+  - Existing prefix observability remains in place:
+    - `actor/prefix_ratio`
+    - `actor/prefix_low`
+    - `actor/prefix_high`
+    - `actor/demo_len`
+- Remaining work after this pass is mainly runtime validation on GPU.
+  - The next check should be a real prefix smoke run to confirm the HF dataset pickling failure is gone and first `update_actor` completes.

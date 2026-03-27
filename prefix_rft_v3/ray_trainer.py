@@ -860,6 +860,24 @@ class RayPPOTrainer:
         batch.meta_info["global_step"] = self.global_steps
         return prefix_metrics
 
+    def _compute_prefix_token_metrics(self, batch: DataProto) -> dict[str, float]:
+        if "response_mask" not in batch.batch.keys() or "prefix_mask" not in batch.batch.keys():
+            return {}
+
+        num_response_tokens = float(torch.sum(batch.batch["response_mask"]).detach().item())
+        num_prefix_tokens = float(torch.sum(batch.batch["prefix_mask"]).detach().item())
+        off_ratio = num_prefix_tokens / num_response_tokens if num_response_tokens > 0 else 0.0
+        return {
+            "actor/num_response_tokens": num_response_tokens,
+            "actor/num_prefix_tokens": num_prefix_tokens,
+            "actor/off_ratio": off_ratio,
+        }
+
+    def _sync_train_dataset_global_step(self) -> None:
+        dataset = getattr(self.train_dataloader, "dataset", None)
+        if dataset is not None and hasattr(dataset, "global_step"):
+            dataset.global_step = self.global_steps
+
     def _finalize_prefix_training_batch(self, gen_batch_output: DataProto) -> DataProto:
         gen_batch_output.meta_info["temperature"] = self.config.actor_rollout_ref.rollout.temperature
         gen_batch_output.meta_info["global_steps"] = self.global_steps
@@ -1616,6 +1634,7 @@ class RayPPOTrainer:
 
         # load checkpoint and update weights before doing anything
         self._load_checkpoint()
+        self._sync_train_dataset_global_step()
         self.checkpoint_manager.update_weights(self.global_steps)
 
         current_epoch = self.global_steps // len(self.train_dataloader)
@@ -1639,6 +1658,7 @@ class RayPPOTrainer:
 
         # we start from step 1
         self.global_steps += 1
+        self._sync_train_dataset_global_step()
         last_val_metrics = None
         self.max_steps_duration = 0
 
@@ -1746,6 +1766,7 @@ class RayPPOTrainer:
                     if self.prefix_rft_enabled:
                         metrics.update(prefix_metrics)
                         metrics.update(self._attach_prefix_batch_metadata(batch))
+                        metrics.update(self._compute_prefix_token_metrics(batch))
                     # Balance the number of valid tokens across DP ranks.
                     # NOTE: This usually changes the order of data in the `batch`,
                     # which won't affect the advantage calculation (since it's based on uid),
@@ -1991,6 +2012,7 @@ class RayPPOTrainer:
 
                 progress_bar.update(1)
                 self.global_steps += 1
+                self._sync_train_dataset_global_step()
 
                 if (
                     hasattr(self.config.actor_rollout_ref.actor, "profiler")
