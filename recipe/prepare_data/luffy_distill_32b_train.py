@@ -1,0 +1,130 @@
+import os
+import json
+from datasets import load_dataset, Dataset
+from custom_rewards.math_oat import rfn, rfn_after_think
+from transformers import AutoTokenizer
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+
+if __name__ == "__main__":
+    data_files = "/mnt/jfs2/cth/085b13/_data/raw_dataset/distillation/luffy_train//luffy_train_r1_distill_32b_unverified.jsonl"
+    HOME_DIR = "/mnt/jfs2/cth/085b13"
+    dataset = load_dataset("json", data_files=data_files)
+    print(dataset)
+    """
+    Dataset({
+        features: ['data_source', 'prompt', 'ability', 'reward_model', 'extra_info', 'problem', 'demos'],
+        num_rows: 45714
+    })
+    """
+    sys_prompt_wo_format = 'Your task is to follow a systematic, thorough reasoning process before providing the final solution. This involves analyzing, summarizing, exploring, reassessing, and refining your thought process through multiple iterations. Structure your response into two sections: Thought and Solution. Each thought should include detailed analysis, brainstorming, verification, and refinement of ideas. In the Solution section, provide the final, logical, and accurate answer, clearly derived from the exploration in the Thought section. Include the answer in \\boxed{} for closed-form results like multiple choices or mathematical solutions'
+    tok = AutoTokenizer.from_pretrained(f"{HOME_DIR}/_models/Qwen2.5-Math-7B")
+    
+    def change_sys_prompt(example, idx):
+        raw_prompt = example["prompt"][1]['content']
+        example["prompt"] = [
+            {"content": sys_prompt_wo_format, "role": "system"},
+            {"content": raw_prompt, "role": "user"}
+        ]
+        return example
+    
+    dataset = dataset.map(function=change_sys_prompt, with_indices=True, num_proc=16)
+
+    def get_label_and_length(example, idx, tok, rfn):
+        import numpy as np
+        demos =  example["demos"]
+        # get length
+        example["num_demo"] = len(demos)
+        example["demos_len"] = [len(tok.tokenize(d)) for d in demos]
+        # get correctness
+        gt = example["reward_model"]['ground_truth']
+        example["correctness"] = [rfn(None, gt, response_str=d)['score'] for d in demos]
+        example["avg_correctness"] = np.mean(example["correctness"])
+        return example
+
+    dataset = dataset.map(
+        function=get_label_and_length, 
+        with_indices=True, 
+        num_proc=16,
+        fn_kwargs={
+            'tok': tok,
+            'rfn': rfn
+        }
+    )
+
+    def filter_out_imcomplete_demos(example):
+        demos = example["demos"]
+        demos_len = example["demos_len"]
+        correctness = example['correctness']
+        new_demos, new_demos_len, new_correctness = [], [], []
+        for d, dl, corr, in zip(demos, demos_len, correctness):
+            if dl < 81080:
+                new_demos.append(d)
+                new_demos_len.append(dl)
+                new_correctness.append(corr)
+        example["demos"] = new_demos
+        example["num_demo"] = len(new_demos)
+        example["demos_len"] = new_demos_len
+        example["correctness"] = new_correctness
+        example["avg_correctness"] = np.mean(new_correctness) if len(new_correctness) > 0 else -1
+        return example
+
+    data_split = dataset['train']
+    print("\nConverting dataset to pandas DataFrame for plotting...")
+    df = data_split.to_pandas()
+
+    # Visualize num_demo and save the figure
+    print("\nVisualizing 'num_demo' distribution...")
+    plt.figure(figsize=(10, 6))
+    sns.histplot(data=df, x='num_demo', discrete=True, shrink=0.8)
+    plt.title('Distribution of Number of Demos per Example')
+    plt.xlabel('Number of Demos')
+    plt.ylabel('Count')
+    plt.grid(axis='y', alpha=0.75)
+    num_demo_fig_path = "/data/stat_num_demo_luffy_train_distill_32b_distribution.png"
+    plt.savefig(num_demo_fig_path)
+    plt.close()
+    print(f"Saved 'num_demo' visualization to {num_demo_fig_path}")
+
+    # Visualize avg_correctness and save the figure
+    print("Visualizing 'avg_correctness' distribution...")
+    plt.figure(figsize=(10, 6))
+    sns.histplot(data=df, x='avg_correctness', kde=True, bins=30)
+    plt.title('Distribution of Average Correctness Score')
+    plt.xlabel('Average Correctness')
+    plt.ylabel('Count')
+    plt.grid(axis='y', alpha=0.75)
+    avg_correctness_fig_path = "/data/stat_avg_correctness_luffy_train_distill_32b_distribution.png"
+    plt.savefig(avg_correctness_fig_path)
+    plt.close()
+    print(f"Saved 'avg_correctness' visualization to {avg_correctness_fig_path}")
+
+
+    print(dataset)
+    dataset = dataset['train']
+    dataset_name = "luffy_train_distill32b_sys_wo_format_all_8k"
+    save_dir = f"{HOME_DIR}/_data/processed_dataset_new/{dataset_name}"
+    print(f"Save to {save_dir}/train.parquet")
+    dataset.to_parquet(os.path.join(save_dir, f'train.parquet'))
+
+    def filter_uncorrect_demos(example):
+        demos = example["demos"]
+        correctness = example["correctness"]
+        assert len(demos) == len(correctness)
+        new_demos = []
+        for d, c in zip(demos, correctness):
+            if c:
+                new_demos.append(d)
+        example["demos"] = new_demos
+        return example
+
+    dataset = dataset.map(filter_uncorrect_demos, num_proc=16)
+    dataset = dataset.remove_columns(['num_demo', 'demos_len', 'correctness', 'avg_correctness'])
+    dataset_name = "luffy_train_distill32b_sys_wo_format_all_8k_correct"
+    save_dir = f"{HOME_DIR}/_data/processed_dataset_new/{dataset_name}"
+    print(f"Save to {save_dir}/train.parquet")
+    dataset.to_parquet(os.path.join(save_dir, f'train.parquet'))
+        
+

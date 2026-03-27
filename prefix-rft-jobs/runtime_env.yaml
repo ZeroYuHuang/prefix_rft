@@ -1,0 +1,26 @@
+working_dir: /home/ma-user/work/hzy-dev/prefix-rft
+excludes:
+  - "/.git/"
+  - "/.vscode/"
+  - "/__pycache__/"
+  - "*.pyc"
+  - "*checkpoints*"
+  - "*.log"
+  - "/.pytest_cache/"
+  - "/build/"
+  - "/dist/"
+  - "*.egg-info/"
+  - "/.mypy_cache/"
+  - "/htmlcov/"
+  - "/.coverage"
+  - "/coverage.xml"
+  - "*.tar.gz"
+  - "*.zip"
+  - "/node_modules/"
+  - "*/.DS_Store"
+  - "/_experiments/"
+  - "/_huggingface/"
+  - "/_code/"
+env_vars:
+  TORCH_NCCL_AVOID_RECORD_STREAMS: "1"
+  # Increase timeout for runtime environment package upload/download

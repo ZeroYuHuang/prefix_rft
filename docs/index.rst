@@ -1,9 +1,7 @@
 Welcome to verl's documentation!
 ================================================
 
-.. _hf_arxiv: https://arxiv.org/pdf/2409.19256
-
-verl is a flexible, efficient and production-ready RL training framework designed for large language models (LLMs) post-training. It is an open source implementation of the `HybridFlow <hf_arxiv>`_ paper.
+verl is a flexible, efficient and production-ready RL training framework designed for large language models (LLMs) post-training. It is an open source implementation of the `HybridFlow <https://arxiv.org/pdf/2409.19256>`_ paper.
 
 verl is flexible and easy to use with:
 
@@ -13,7 +11,7 @@ verl is flexible and easy to use with:
 
 - **Flexible device mapping and parallelism**: Supports various placement of models onto different sets of GPUs for efficient resource utilization and scalability across different cluster sizes.
 
-- Readily integration with popular HuggingFace models
+- Ready integration with popular HuggingFace models
 
 
 verl is fast with:
@@ -32,6 +30,8 @@ verl is fast with:
 
    start/install
    start/quickstart
+   start/multinode
+   start/ray_debug_tutorial
 
 .. toctree::
    :maxdepth: 4
@@ -58,6 +58,14 @@ verl is fast with:
 
    examples/ppo_code_architecture
    examples/gsm8k_example
+   examples/multi_modal_example
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Algorithms
+
+   experiment/ppo
+
 
 .. toctree:: 
    :maxdepth: 1
@@ -66,27 +74,41 @@ verl is fast with:
    workers/ray_trainer
    workers/fsdp_workers
    workers/megatron_workers
+   workers/sglang_worker
 
 .. toctree::
    :maxdepth: 1
    :caption: Performance Tuning Guide
    
    perf/perf_tuning
+   README_vllm0.8.md
+   perf/device_tuning
 
 .. toctree::
    :maxdepth: 1
-   :caption: Experimental Results
+   :caption: Adding new models
 
-   experiment/ppo
-
-.. toctree::
-   :maxdepth: 1
-   :caption: Advance Usage and Extension
-
-   advance/placement
-   advance/dpo_extension
    advance/fsdp_extension
    advance/megatron_extension
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Advanced Features
+
+   advance/checkpoint
+   advance/rope
+   sglang_multiturn/multiturn.rst
+   advance/placement
+   advance/dpo_extension
+   examples/sandbox_fusion_example
+
+.. toctree::
+   :maxdepth: 1
+   :caption: API References
+
+   data
+   api/utils
+
 
 .. toctree::
    :maxdepth: 1
@@ -101,11 +123,31 @@ verl is free software; you can redistribute it and/or modify it under the terms
 of the Apache License 2.0. We welcome contributions.
 Join us on `GitHub <https://github.com/volcengine/verl>`_, `Slack <https://join.slack.com/t/verlgroup/shared_invite/zt-2w5p9o4c3-yy0x2Q56s_VlGLsJ93A6vA>`_ and `Wechat <https://raw.githubusercontent.com/eric-haibin-lin/verl-community/refs/heads/main/WeChat.JPG>`_ for discussions.
 
-Code formatting
-^^^^^^^^^^^^^^^^^^^^^^^^
-We use yapf (Google style) to enforce strict code formatting when reviewing MRs. Run yapf at the top level of verl repo:
+Contributions from the community are welcome! Please check out our `project roadmap <https://github.com/volcengine/verl/issues/710>`_ and `good first issues <https://github.com/volcengine/verl/issues?q=is%3Aissue%20state%3Aopen%20label%3A%22good%20first%20issue%22>`_ to see where you can contribute.
+
+Code Linting and Formatting
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+We use pre-commit to help improve code quality. To initialize pre-commit, run:
 
 .. code-block:: bash
 
-   pip3 install yapf
-   yapf -ir -vv --style ./.style.yapf verl examples tests
+   pip install pre-commit
+   pre-commit install
+
+To resolve CI errors locally, you can also manually run pre-commit by:
+
+.. code-block:: bash
+
+   pre-commit run
+
+Adding CI tests
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+If possible, please add CI test(s) for your new feature:
+
+1. Find the most relevant workflow yml file, which usually corresponds to a ``hydra`` default config (e.g. ``ppo_trainer``, ``ppo_megatron_trainer``, ``sft_trainer``, etc).
+2. Add related path patterns to the ``paths`` section if not already included.
+3. Minimize the workload of the test script(s) (see existing scripts for examples).
+
+We are HIRING! Send us an `email <mailto:haibin.lin@bytedance.com>`_ if you are interested in internship/FTE opportunities in MLSys/LLM reasoning/multimodal alignment.

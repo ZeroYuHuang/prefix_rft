@@ -7,13 +7,15 @@ In this section, we will discuss how to tune the performance of all the stages i
 
 1. Rollout generation throughput.
 
-2. Batch size tuning for forward and backward computation
+2. Enable ``use_remove_padding=True`` for sequence packing (i.e., data packing and remove padding).
 
-3. Enable ``use_dynamic_bsz=True`` for higher throughput.
+3. Batch size tuning for forward and backward computation
 
-4. Utilize Ulysses Sequence Parallel for Long Context Training
+4. Enable ``use_dynamic_bsz=True`` for higher throughput.
 
-5. LigerKernel for SFT performance optimization
+5. Utilize Ulysses Sequence Parallel for Long Context Training
+
+6. LigerKernel for SFT performance optimization
 
 Rollout Generation Tuning
 --------------------------
@@ -22,9 +24,16 @@ verl currently supports two rollout backends: vLLM and TGI (with SGLang support 
 
 Below are key factors for tuning vLLM-based rollout. Before tuning, we recommend setting ``actor_rollout_ref.rollout.disable_log_stats=False`` so that rollout statistics are logged.
 
-- Increase ``gpu_memory_utilization``. The vLLM pre-allocates GPU KVCache by using gpu_memory_utilization% of the remaining memory. 
+- Increase ``gpu_memory_utilization``.
+
+  - For vLLM v0.5.4 and v0.6.3, the vLLM pre-allocates GPU KVCache by using gpu_memory_utilization of the **remaining** memory. 
+  - For vLLM v0.7.0 and later, the vLLM instance will only use gpu_memory_utilization of the **total** memory.
+  - For SGLang, it's the fraction of the free GPU memory used for **static** memory like model weights and KV cache. However, the remaining (1-gpu_memory_utilization) will also be used during inference.
+
   However, if model parameters and optimizer states are not offloaded, using too high a fraction can lead to OOM. 
   A value between 0.5 and 0.7 often strikes a good balance between high throughput and avoiding OOM.
+
+  Note: since the definition of ``gpu_memory_utilization`` varies across inference engines, a value that works well for one engine may cause OOM for another.
 
 - Adjust ``max_num_seqs`` or ``max_num_batched_tokens``.
   If the GPU cache utilization is relatively low in the log, increase ``max_num_seqs`` or ``max_num_batched_tokens`` 
@@ -35,10 +44,30 @@ Below are key factors for tuning vLLM-based rollout. Before tuning, we recommend
   When GPU resources allow, a smaller tensor parallel size spawns more vLLM replicas. 
   Data parallelism (DP) can yield higher throughput than tensor parallelism (TP), but also increases KVCache consumption. 
   Carefully balance the trade-off between more replicas and higher memory usage.
-  Our experient in Sec. 8.4 of `HybridFlow paper <https://github.com/volcengine/verl/blob/main/verl/utils/reward_score/gsm8k.py>`_ evaluate this trade-off.
+  Our experient in Sec. 8.4 of `HybridFlow paper <https://arxiv.org/pdf/2409.19256v2>`_ evaluate this trade-off.
 
 More tuning details such as dealing with Preemption and Chunked-prefill
 can be found in `vLLM official tuning guide <https://docs.vllm.ai/en/latest/performance/optimization.html>`_ 
+
+The performance of vllm can be further increased if upgrading from v0.6.3 to v0.7. See https://github.com/volcengine/verl/blob/main/docs/README_vllm0.7.md for details on how to upgrade.
+
+Enable remove padding (sequence packing)
+-----------------------------------------
+
+Currently, for llama, mistral, gemma1 and qwen based models, users can enable `use_remove_padding=True` to utilize the 
+sequence packing implementation provided by transformers library.
+
+For other models, transformers library may also support it but we haven't tested it yet.
+Users can add the desired model config to the  `test_transformer.py <https://github.com/volcengine/verl/blob/main/tests/models/test_transformer.py#L24>`_ file.
+And test its functionaility by running the following command:
+
+.. code-block:: bash
+
+  pytest -s tests/models/test_transformer.py
+
+If the test passes, you can add your desired model into the model `registry.py <https://github.com/volcengine/verl/blob/main/verl/models/registry.py#L24>`_ file.
+Then, you can enjoy the performance boost of sequence packing
+and welcome to PR your tested model to verl!
 
 
 Batch Size Tuning
@@ -129,7 +158,7 @@ LigerKernel for SFT
 
 LigerKernel is a high-performance kernel for Supervised Fine-Tuning (SFT) that can improve training efficiency. To enable LigerKernel in your SFT training:
 
-1. In your SFT configuration file (e.g., ``verl/trainer/config/sft_trainer.yaml``), set the ``use_liger`` parameter:
+1. Install liger-kernel via ``pip3 install liger-kernel``. In your SFT configuration file (e.g., ``verl/trainer/config/sft_trainer.yaml``), set the ``use_liger`` parameter:
 
    .. code-block:: yaml
 
