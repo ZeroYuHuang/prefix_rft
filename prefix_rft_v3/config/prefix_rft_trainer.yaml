@@ -1,0 +1,316 @@
+hydra:
+
+  searchpath:
+    - pkg://verl.trainer.config
+
+defaults:
+
+  - model_engine: dp
+  - actor@actor_rollout_ref.actor: ${model_engine}_actor
+  - data@data: legacy_data
+  - ref@actor_rollout_ref.ref: ${model_engine}_ref
+  - rollout@actor_rollout_ref.rollout: rollout
+  - model@actor_rollout_ref.model: hf_model
+  - critic@critic: ${model_engine}_critic
+  - legacy_reward_impl
+  - reward@reward: reward
+  - algorithm@algorithm.rollout_correction: rollout_correction
+  - _self_
+
+data:
+
+  train_files: /mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/datasets/prefix-rft-code/train.parquet
+  val_files: /mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/datasets/prefix-rft-code/test.parquet
+  prompt_key: prompt
+  reward_fn_key: data_source
+  max_prompt_length: 2048
+  max_response_length: 4096
+  train_batch_size: 16
+  val_batch_size: 256
+  return_raw_input_ids: False
+  return_raw_chat: True
+  return_full_prompt: False
+  shuffle: True
+  seed: 42
+  dataloader_num_workers: 0
+  validation_shuffle: False
+  filter_overlong_prompts: True
+  filter_overlong_prompts_workers: 16
+  truncation: error
+  image_key: images
+  video_key: videos
+  trust_remote_code: True
+  custom_cls:
+    path: null
+    name: null
+  apply_chat_template_kwargs: {}
+
+prefix_rft:
+
+  enable: False
+
+actor_rollout_ref:
+
+  hybrid_engine: true
+  nccl_timeout: 600
+
+  model:
+    path: /mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/models/Qwen3-0.6B-Base
+    custom_chat_template: null
+    external_lib: null
+    override_config: {}
+    enable_gradient_checkpointing: True
+    enable_activation_offload: False
+    use_remove_padding: True
+    trust_remote_code: True
+    use_liger: False
+    use_fused_kernels: False
+
+  actor:
+    strategy: fsdp
+    ppo_mini_batch_size: 64
+    ppo_micro_batch_size: null
+    ppo_micro_batch_size_per_gpu: 64
+    use_dynamic_bsz: True
+    ppo_max_token_len_per_gpu: 24576
+    grad_clip: 1.0
+    clip_ratio: 0.2
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.2
+    clip_ratio_c: 3.0
+    loss_agg_mode: token-mean
+    entropy_coeff: 0.001
+    calculate_entropy: False
+    use_kl_loss: False
+    use_torch_compile: True
+    kl_loss_coef: 0.0
+    kl_loss_type: low_var_kl
+    ppo_epochs: 1
+    shuffle: False
+    checkpoint:
+      save_contents: [model, optimizer, extra]
+      load_contents: [model, optimizer, extra]
+      async_save: false
+    optim:
+      lr: 1e-6
+      lr_warmup_steps: -1
+      lr_warmup_steps_ratio: 0.0
+      min_lr_ratio: 0.0
+      num_cycles: 0.5
+      lr_scheduler_type: constant
+      total_training_steps: -1
+      weight_decay: 0.01
+    fsdp_config:
+      wrap_policy:
+        min_num_params: 0
+      param_offload: false
+      optimizer_offload: false
+      offload_policy: false
+      reshard_after_forward: true
+      fsdp_size: -1
+      forward_prefetch: false
+      model_dtype: fp32
+      use_orig_params: false
+      dtype: bfloat16
+
+  ref:
+    strategy: fsdp
+    use_torch_compile: True
+    log_prob_micro_batch_size: null
+    log_prob_micro_batch_size_per_gpu: 64
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    fsdp_config:
+      wrap_policy:
+        min_num_params: 0
+      param_offload: true
+      optimizer_offload: false
+      offload_policy: false
+      reshard_after_forward: true
+      fsdp_size: -1
+      forward_prefetch: false
+      model_dtype: fp32
+      use_orig_params: false
+      dtype: bfloat16
+
+  rollout:
+    name: vllm
+    mode: async
+    nnodes: 0
+    n_gpus_per_node: ${trainer.n_gpus_per_node}
+    temperature: 1.0
+    top_k: -1
+    top_p: 1.0
+    prompt_length: ${data.max_prompt_length}
+    response_length: ${data.max_response_length}
+    dtype: bfloat16
+    gpu_memory_utilization: 0.65
+    ignore_eos: False
+    enforce_eager: True
+    free_cache_engine: True
+    tensor_model_parallel_size: 1
+    data_parallel_size: 1
+    expert_parallel_size: 1
+    pipeline_model_parallel_size: 1
+    max_num_batched_tokens: 32768
+    max_model_len: null
+    max_num_seqs: 1024
+    enable_chunked_prefill: True
+    enable_prefix_caching: True
+    load_format: dummy
+    log_prob_micro_batch_size: null
+    log_prob_micro_batch_size_per_gpu: 64
+    log_prob_use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+    log_prob_max_token_len_per_gpu: ${actor_rollout_ref.actor.ppo_max_token_len_per_gpu}
+    disable_log_stats: True
+    do_sample: True
+    n: 4
+    val_kwargs:
+      top_k: -1
+      top_p: 1.0
+      temperature: 0.0
+      n: 1
+      do_sample: False
+    multi_turn:
+      enable: False
+      tool_config_path: null
+      format: hermes
+    agent:
+      num_workers: 8
+      default_agent_loop: single_turn_agent
+      agent_loop_config_path: null
+
+critic:
+
+  strategy: fsdp
+  ppo_mini_batch_size: ${actor_rollout_ref.actor.ppo_mini_batch_size}
+  ppo_micro_batch_size: null
+  ppo_micro_batch_size_per_gpu: 64
+  forward_micro_batch_size: null
+  forward_micro_batch_size_per_gpu: 64
+  use_dynamic_bsz: ${actor_rollout_ref.actor.use_dynamic_bsz}
+  ppo_max_token_len_per_gpu: 32768
+  ppo_infer_max_token_len_per_gpu: 32768
+  ppo_epochs: ${actor_rollout_ref.actor.ppo_epochs}
+  shuffle: ${actor_rollout_ref.actor.shuffle}
+  grad_clip: 1.0
+  cliprange_value: 0.5
+  model:
+    path: /mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/models/Qwen3-0.6B-Base
+    external_lib: null
+    override_config: {}
+    enable_gradient_checkpointing: True
+    use_remove_padding: False
+    trust_remote_code: True
+  checkpoint:
+    save_contents: [model, optimizer, extra]
+    load_contents: [model, optimizer, extra]
+    async_save: false
+  optim:
+    lr: 1e-5
+    lr_warmup_steps_ratio: 0.0
+    min_lr_ratio: 0.0
+    num_cycles: 0.5
+    lr_scheduler_type: constant
+    total_training_steps: -1
+    weight_decay: 0.01
+
+reward:
+
+  num_workers: 8
+  custom_reward_function:
+    path: prefix_rft_v3/custom_rewards/code_r1.py
+    name: compute_score
+  reward_manager:
+    source: register
+    name: naive
+    module:
+      path: null
+      name: custom_reward_manager
+  reward_model:
+    enable: False
+    enable_resource_pool: False
+    n_gpus_per_node: 0
+    nnodes: 0
+    model_path: null
+  sandbox_fusion:
+    url: null
+    max_concurrent: 64
+    memory_limit_mb: 1024
+
+algorithm:
+
+  _target_: verl.trainer.config.AlgoConfig
+  gamma: 1.0
+  lam: 1.0
+  adv_estimator: grpo
+  norm_adv_by_std_in_grpo: False
+  use_kl_in_reward: False
+  kl_penalty: kl
+  kl_ctrl:
+    _target_: verl.trainer.config.KLControlConfig
+    type: fixed
+    kl_coef: 0.0
+    horizon: 10000
+    target_kl: 0.1
+  use_pf_ppo: False
+
+trainer:
+
+  balance_batch: True
+  total_epochs: 30
+  total_training_steps: 1500
+  project_name: prefix_rft_v3_code
+  experiment_name: qwen3-0p6b-code-rft-baseline-v3
+  logger: [console, wandb]
+  log_val_generations: 0
+  rollout_data_dir: null
+  validation_data_dir: null
+  nnodes: 1
+  n_gpus_per_node: 8
+  save_freq: 100
+  esi_redundant_time: 0
+  resume_mode: auto
+  resume_from_path: null
+  val_before_train: True
+  val_only: False
+  test_freq: 100
+  critic_warmup: 0
+  default_hdfs_dir: null
+  del_local_ckpt_after_load: False
+  default_local_dir: /mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/prft-results/${trainer.experiment_name}/checkpoints
+  max_actor_ckpt_to_keep: 3
+  max_critic_ckpt_to_keep: 3
+  ray_wait_register_center_timeout: 300
+  device: cuda
+  use_legacy_worker_impl: auto
+
+global_profiler:
+
+  _target_: verl.utils.profiler.ProfilerConfig
+  tool: null
+  steps: null
+  profile_continuous_steps: False
+  save_path: outputs/profile
+  global_tool_config:
+    nsys:
+      _target_: verl.utils.profiler.config.NsightToolConfig
+      discrete: False
+      controller_nsight_options:
+        trace: cuda,nvtx,cublas,ucx
+        cuda-memory-usage: "true"
+        cuda-graph-trace: graph
+      worker_nsight_options:
+        trace: cuda,nvtx,cublas,ucx
+        cuda-memory-usage: "true"
+
+ray_kwargs:
+
+  ray_init:
+    num_cpus: null
+    runtime_env: {}
+  timeline_json_file: null
+
+transfer_queue:
+
+  enable: false
