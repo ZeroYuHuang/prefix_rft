@@ -20,7 +20,7 @@ defaults:
 data:
 
   train_files: /mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/datasets/prefix-rft-code/train.parquet
-  val_files: /mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/datasets/prefix-rft-code/test.parquet
+  val_files: /mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/datasets/prefix-rft-code/val.parquet
   prompt_key: prompt
   reward_fn_key: data_source
   max_prompt_length: 2048
@@ -74,6 +74,10 @@ prefix_rft:
   off_ent_mask_ratio_ctrl:
     kwargs:
       init: 0.8
+  policy_loss_mode: prefix_v2
+  clip_ratio_low_off: null
+  clip_ratio_high_off: null
+  enable_clip: True
   entropy_mode: response_only
   replace_old_log_prob: False
 

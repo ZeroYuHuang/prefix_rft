@@ -434,3 +434,304 @@ Constraints:
     - `actor/demo_len`
 - Remaining work after this pass is mainly runtime validation on GPU.
   - The next check should be a real prefix smoke run to confirm the HF dataset pickling failure is gone and first `update_actor` completes.
+
+## Implementation Update - Dataset Alignment With Upstream RLHFDataset
+
+- Refactored `prefix_rft_v3/rl_dataset.py` so `PrefixRFTDataset` now subclasses upstream `RLHFDataset` instead of reimplementing the whole loading stack.
+- The prefix dataset now reuses upstream behavior for:
+  - file download/cache
+  - parquet loading and concatenation
+  - `max_samples` selection
+  - prompt-length filtering
+  - resume / `__getstate__` behavior inherited from upstream
+  - multimodal-aware `_build_messages()` path
+- Prefix-specific behavior remains in the subclass:
+  - demonstration column normalization
+  - demo dropout / optional demo-only filtering
+  - prefix controller state (`uid`, `avg_rewards`, `prefix_ratios`, `training_metrics`, `global_step`)
+  - prefix-aware `__getitem__` output contract used by `prefix_rft_v3/ray_trainer.py`
+- To preserve the previous prefix config behavior, the subclass overrides `maybe_filter_out_long_prompts()` and temporarily uses `filter_overlong_prompts_length` for upstream filtering before restoring the actual training `max_prompt_length`.
+- `_build_messages()` now delegates to upstream on a deep-copied example so we reuse upstream placeholder handling without mutating stored samples.
+- Local validation on real data succeeded for the new dataset path:
+  - instantiated `PrefixRFTDataset` on the real train parquet
+  - validated both `filter_overlong_prompts_workers=1` and `16`
+  - fetched a sample and confirmed prefix fields such as `prefix_ratio_0`, `prefix_uid_0`, and `raw_prompt_lengths` are produced
+- Expected impact:
+  - prefix data loading should now behave much closer to baseline/upstream
+  - any remaining failures are more likely to be true prefix runtime issues after dataset construction, rather than custom dataset ingestion drift
+
+## Finalized Recipe Decisions And Detailed Work Orders
+
+This section supersedes the earlier idea of migrating v2 prefix-aware advantage estimators.
+
+### Final Recipe Decisions
+
+- The final training recipe is:
+  - build a hybrid trajectory where the prefix tokens are part of the response sequence
+  - compute reward on the full hybrid trajectory
+  - compute advantage with ordinary GRPO grouped by `uid`
+  - let prefix tokens and on-policy continuation share the same advantage before actor-side reshaping
+  - apply prefix-specific masking / reshaping only in the actor update path
+- Therefore we explicitly do **not** plan to migrate the old v2 prefix-aware advantage branches such as:
+  - `recipe/prefix_rft_v2/ray_trainer.py:160`
+  - `recipe/prefix_rft_v2/core_algos.py:162`
+  - `recipe/prefix_rft_v2/core_algos.py:262`
+- The v2 custom policy loss is **optional for recipe semantics but recommended for extensibility**.
+  - It does not change the shared-advantage recipe.
+  - It adds an optional prefix-specific PPO clipping path and extra diagnostics.
+
+### P0-1 Freeze Shared-Advantage Semantics
+
+- Goal:
+  - keep ordinary GRPO semantics so prefix tokens and continuation tokens share the same advantage before reshape.
+- Implementation:
+  - keep `prefix_rft_v3/ray_trainer.py` on the ordinary GRPO path.
+  - do not add any new `prefix_uid`-aware advantage estimator to the active recipe.
+  - add a short inline note in the relevant trainer logic so future edits do not accidentally revive the deprecated v2 path.
+- References:
+  - `prefix_rft_v3/ray_trainer.py:182`
+  - `recipe/prefix_rft_v2/ray_trainer.py:160`
+  - `recipe/prefix_rft_v2/core_algos.py:162`
+  - `recipe/prefix_rft_v2/core_algos.py:262`
+- Acceptance:
+  - prefix training still uses ordinary `GRPO(uid)` advantage computation.
+  - no new active config path depends on `prefix_uid` during advantage computation.
+
+### P0-2 Finalize Hybrid-Trajectory Semantics In Trainer
+
+- Goal:
+  - ensure the prefix is treated as response content rather than prompt-only context.
+- Implementation:
+  - verify and keep the current finalized batch path where prefix tokens are merged into `responses`.
+  - keep `response_mask` equal to `1` on prefix tokens.
+  - keep `prefix_mask` and `prefix_relpos` aligned with the finalized response layout.
+  - add or tighten assertions around the finalized prefix batch so semantic regressions fail early.
+- References:
+  - `prefix_rft_v3/ray_trainer.py:377`
+  - `prefix_rft_v3/ray_trainer.py:482`
+  - `prefix_rft_v3/ray_trainer.py:795`
+  - `recipe/prefix_rft_v2/ray_trainer.py:1115`
+  - `recipe/prefix_rft_v2/ray_trainer.py:1153`
+- Acceptance:
+  - non-empty prefix samples have `prefix_mask.sum() > 0`.
+  - prefix tokens are included in `response_mask`.
+  - reward and GRPO operate on the full hybrid trajectory.
+
+### P0-3 Finalize Actor-Side Reshape And Mask Path
+
+- Goal:
+  - make the actor path match the intended recipe: shared advantage first, then prefix-aware reshape / mask.
+- Implementation:
+  - keep `reshape_func(...)` as the only place where prefix tokens are specially modified before PPO loss.
+  - audit that `prefix_mask`, `prefix_relpos`, `prefix_ctrl_low`, `prefix_ctrl_high`, and `replace_old_log_prob` flow through the current actor path.
+  - keep entropy masking behavior controlled by `entropy_mode=response_only`.
+- References:
+  - `prefix_rft_v3/dp_actor.py:67`
+  - `prefix_rft_v3/dp_actor.py:327`
+  - `recipe/prefix_rft_v2/dp_actor.py:720`
+  - `recipe/prefix_rft_v2/dp_actor.py:735`
+- Acceptance:
+  - prefix tokens and continuation tokens enter actor update with the same base advantage.
+  - prefix-specific change only happens through reshape / masking logic.
+  - `replace_old_log_prob` continues to work when enabled.
+
+### P0-4 Implement Prefix-Specific PPO Clipping Mode For Extensibility
+
+- Goal:
+  - port the useful part of the v2 custom policy loss as a prefix-only, optional PPO clipping mode.
+- Why this is still worth doing:
+  - it does not change the shared-advantage recipe.
+  - it adds a clean extension point for future experiments on prefix-token update strength.
+  - it adds prefix-only diagnostics that upstream loss does not expose.
+- Implementation:
+  - create `prefix_rft_v3/core_algos.py`.
+  - copy upstream `vanilla` PPO loss from `verl/trainer/ppo/core_algos.py` as the base implementation.
+  - register a new prefix loss mode, e.g. `prefix_v2`.
+  - add the minimal v2-only extensions:
+    - `prefix_mask`
+    - `clip_ratio_low_off`
+    - `clip_ratio_high_off`
+    - `enable_clip`
+    - prefix clip metrics
+  - do **not** add any prefix-aware advantage logic here.
+- References:
+  - `verl/trainer/ppo/core_algos.py:1276`
+  - `recipe/prefix_rft_v2/core_algos.py:544`
+  - `recipe/prefix_rft_v2/dp_actor.py:739`
+- Acceptance:
+  - prefix runs can opt into `policy_loss.loss_mode=prefix_v2`.
+  - metrics include:
+    - `actor/pg_clipfrac_prefix`
+    - `actor/pg_clipfrac_lower_prefix`
+  - baseline remains on upstream `vanilla` loss.
+
+### P0-5 Wire Custom Policy Loss Into Prefix Actor And Config
+
+- Goal:
+  - make the new prefix-specific policy loss callable from the current prefix worker path without affecting baseline.
+- Implementation:
+  - import and register `prefix_rft_v3.core_algos` before actor updates begin.
+  - update `prefix_rft_v3/dp_actor.py` to pass `prefix_mask` into the prefix loss mode when active.
+  - wire prefix-only config knobs for:
+    - `policy_loss.loss_mode=prefix_v2`
+    - `clip_ratio_low_off`
+    - `clip_ratio_high_off`
+    - `enable_clip`
+  - inject those knobs through the existing prefix worker/config wiring rather than modifying upstream baseline config behavior.
+- References:
+  - `prefix_rft_v3/main.py:10`
+  - `prefix_rft_v3/dp_actor.py:344`
+  - `prefix_rft_v3/fsdp_workers.py`
+  - `prefix_rft_v3/config/prefix_rft_trainer.yaml`
+  - `verl/workers/config/actor.py:71`
+  - `verl/workers/actor/dp_actor.py:603`
+- Acceptance:
+  - prefix jobs can enable the custom loss mode by config.
+  - baseline jobs keep the upstream actor loss path.
+  - missing prefix-only knobs fall back to safe defaults.
+
+### P1-6 Restore And Extend Prefix Diagnostics
+
+- Goal:
+  - make the prefix path debuggable enough for real runs, not only smoke runs.
+- Implementation:
+  - keep current metrics:
+    - `actor/num_response_tokens`
+    - `actor/num_prefix_tokens`
+    - `actor/off_ratio`
+    - `actor/prefix_ratio`
+    - `actor/prefix_low`
+    - `actor/prefix_high`
+    - `actor/demo_len`
+  - add the prefix clipping metrics from the custom policy loss path.
+  - add assertions or guarded logs for obviously invalid states.
+- References:
+  - `prefix_rft_v3/ray_trainer.py:832`
+  - `prefix_rft_v3/ray_trainer.py:863`
+  - `recipe/prefix_rft_v2/dp_actor.py:785`
+- Acceptance:
+  - metrics clearly show whether prefix tokens are present and how strongly they are being clipped.
+  - invalid prefix states fail fast instead of silently producing bad training.
+
+### P1-7 Prefix Script Finalization
+
+- Goal:
+  - make the launch script explicitly reflect the finalized recipe and the optional prefix PPO extension.
+- Implementation:
+  - keep the prefix job on the shared-advantage GRPO path.
+  - add explicit prefix-only overrides for the optional custom policy loss mode and its knobs.
+  - keep baseline script free of all prefix-specific loss settings.
+- References:
+  - `prefix-rft-jobs/code-qwen3-0p6b-prefix-rft-v3.sh`
+  - `prefix-rft-jobs/code-qwen3-0p6b-rft-baseline-v3.sh`
+- Acceptance:
+  - prefix and baseline scripts only differ on intended prefix-specific knobs.
+  - there is no accidental route from baseline into prefix-only loss logic.
+
+### P1-8 Real-Data Readiness Gate
+
+- Goal:
+  - define the minimum runtime bar before saying prefix-RFT is ready for actual experiments.
+- Validation target:
+  - real-data prefix run reaches first `update_actor`.
+  - then runs for at least 100-200 steps without crash.
+  - prefix metrics are visible and nonzero.
+  - if custom prefix PPO clipping is enabled, its prefix metrics are visible too.
+- References:
+  - `prefix-rft-jobs/code-qwen3-0p6b-prefix-rft-v3.sh`
+  - `prefix_rft_v3/ray_trainer.py:1714`
+  - `prefix_rft_v3/dp_actor.py:327`
+- Acceptance:
+  - `actor/num_prefix_tokens > 0`
+  - `actor/off_ratio > 0`
+  - `actor/pg_clipfrac_prefix` is visible when `prefix_v2` loss is enabled
+  - training does not regress baseline behavior
+
+### P2-9 Clarify Dataset Feedback Loop Scope
+
+- Goal:
+  - remove ambiguity about whether `avg_rewards`, `prefix_ratios`, and `training_metrics` are active control signals or only reserved state.
+- Current status:
+  - the dataset stores those fields and the trainer exposes `on_batch_end`, but the current controller implementation is primarily driven by `global_step`.
+- Implementation options:
+  - either implement `on_batch_end(batch)` and truly update dataset history by `uid`, or
+  - explicitly keep these as reserved state and document that the current prefix schedule is step-driven.
+- References:
+  - `prefix_rft_v3/rl_dataset.py:141`
+  - `prefix_rft_v3/rl_dataset.py:156`
+  - `prefix_rft_v3/rl_dataset.py:262`
+  - `prefix_rft_v3/ray_trainer.py:2034`
+  - `prefix_rft_v3/scheduler/global_step.py:125`
+- Acceptance:
+  - there is no ambiguity about whether reward-history-adaptive prefix scheduling is actually live.
+
+### Execution Order
+
+1. Finish `P0-1` through `P0-3` to lock the final recipe semantics.
+2. Implement `P0-4` and `P0-5` so the optional prefix-specific PPO clipping path exists behind a prefix-only config switch.
+3. Finish `P1-6` and `P1-7` for observability and clean launch behavior.
+4. Run `P1-8` on real data.
+5. Only then decide whether `P2-9` is needed for the current experiment phase.
+
+## Implementation Update - Shared-Advantage Semantics And Prefix PPO Extension
+
+- Locked the shared-advantage recipe in `prefix_rft_v3/ray_trainer.py`.
+  - Ordinary `GRPO(uid)` remains the active advantage path.
+  - Added an explicit note in `compute_advantage(...)` that prefix-specific behavior belongs in actor-side reshape/masking rather than prefix-aware advantage estimators.
+- Added explicit hybrid-trajectory semantic validation in `prefix_rft_v3/ray_trainer.py`.
+  - Introduced `validate_prefix_hybrid_tensors(...)`.
+  - The finalized batch path now asserts:
+    - `prefix_mask` is a subset of `response_mask`
+    - prefix tokens participate in response loss
+    - prefix tokens have non-negative `prefix_relpos`
+    - non-prefix continuation tokens carry `prefix_relpos == -1`
+- Implemented the optional prefix-specific PPO clipping extension in `prefix_rft_v3/core_algos.py`.
+  - Registered a new policy loss mode: `prefix_v2`.
+  - The implementation is based on upstream `vanilla` PPO loss and adds only the minimal prefix-specific extensions:
+    - `prefix_mask`
+    - `clip_ratio_low_off`
+    - `clip_ratio_high_off`
+    - `enable_clip`
+    - prefix-specific clip metrics
+  - This extension does not change the shared-advantage recipe.
+- Registered custom prefix core algos at startup.
+  - `prefix_rft_v3/main.py` now imports `prefix_rft_v3.core_algos` eagerly so the custom policy loss mode is always registered before training begins.
+- Wired the custom prefix policy loss into the actor path.
+  - `prefix_rft_v3/dp_actor.py` now forwards `prefix_mask` into the policy loss only when `policy_loss.loss_mode=prefix_v2`.
+  - Existing actor-side reshape and `replace_old_log_prob` behavior remain intact.
+- Wired prefix-only loss configuration through the prefix worker path.
+  - `prefix_rft_v3/fsdp_workers.py` now switches the prefix actor policy loss mode to `prefix_v2` without modifying the baseline actor path.
+  - The dataclass actor config receives `prefix_rft` as a post-conversion attached attribute rather than injecting unsupported top-level config keys.
+- Added prefix-only config defaults in `prefix_rft_v3/config/prefix_rft_trainer.yaml`.
+  - Added:
+    - `policy_loss_mode: prefix_v2`
+    - `clip_ratio_low_off: null`
+    - `clip_ratio_high_off: null`
+    - `enable_clip: True`
+- Updated the prefix launch script in `prefix-rft-jobs/code-qwen3-0p6b-prefix-rft-v3.sh`.
+  - The prefix job now explicitly enables:
+    - `prefix_rft.policy_loss_mode=prefix_v2`
+    - `prefix_rft.enable_clip=true`
+  - Baseline launch behavior remains unchanged.
+
+### Validation Completed For This Pass
+
+- Syntax validation succeeded for:
+  - `prefix_rft_v3/core_algos.py`
+  - `prefix_rft_v3/main.py`
+  - `prefix_rft_v3/dp_actor.py`
+  - `prefix_rft_v3/fsdp_workers.py`
+  - `prefix_rft_v3/ray_trainer.py`
+- Registry and invocation validation succeeded for the new prefix policy loss mode.
+  - Confirmed `get_policy_loss_fn("prefix_v2")` resolves.
+  - Confirmed metrics include:
+    - `actor/pg_clipfrac_prefix`
+    - `actor/pg_clipfrac_lower_prefix`
+- Hybrid-trajectory semantic assertion validation succeeded on a synthetic tensor example.
+
+### Remaining Immediate Runtime Check
+
+- The next runtime validation should be a real-data prefix smoke run to confirm:
+  - the actor path reaches `update_actor`
+  - `prefix_v2` policy loss executes inside the real prefix worker path
+  - `actor/pg_clipfrac_prefix` appears in training logs

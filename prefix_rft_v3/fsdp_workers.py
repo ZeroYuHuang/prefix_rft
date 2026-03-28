@@ -1,5 +1,6 @@
 from omegaconf import OmegaConf, open_dict
 
+from prefix_rft_v3.core_algos import PREFIX_POLICY_LOSS_MODE
 from prefix_rft_v3.dp_actor import DataParallelPPOActor
 from verl.utils.config import omega_conf_to_dataclass
 from verl.workers.fsdp_workers import ActorRolloutRefWorker as VerlActorRolloutRefWorker
@@ -9,22 +10,14 @@ from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker as VerlAsyncAct
 def _inject_prefix_actor_config(worker) -> None:
     prefix_cfg = worker.config.get("prefix_rft", {}) or {}
 
-    actor_defaults = {
-        "off_adv_reshaper": prefix_cfg.get("off_adv_reshaper", "entropy"),
-        "off_ent_mask_ratio_ctrl_type": prefix_cfg.get("off_ent_mask_ratio_ctrl_type", "const"),
-        "off_ent_mask_ratio_ctrl": prefix_cfg.get("off_ent_mask_ratio_ctrl", {"kwargs": {"init": 0.8}}),
-        "entropy_mode": prefix_cfg.get("entropy_mode", "response_only"),
-        "replace_old_log_prob": prefix_cfg.get("replace_old_log_prob", False),
-    }
+    with open_dict(worker.config.actor.policy_loss):
+        worker.config.actor.policy_loss.loss_mode = prefix_cfg.get("policy_loss_mode", PREFIX_POLICY_LOSS_MODE)
 
-    with open_dict(worker.config.actor):
-        worker.config.actor.prefix_rft = OmegaConf.create(OmegaConf.to_container(prefix_cfg, resolve=True))
-        for key, value in actor_defaults.items():
-            worker.config.actor[key] = OmegaConf.create(value) if isinstance(value, dict) else value
 
-    if hasattr(worker.config, "ref"):
-        with open_dict(worker.config.ref):
-            worker.config.ref.prefix_rft = OmegaConf.create(OmegaConf.to_container(prefix_cfg, resolve=True))
+def _build_prefix_actor_config(worker):
+    actor_cfg = omega_conf_to_dataclass(worker.config.actor)
+    actor_cfg.prefix_rft = OmegaConf.to_container(worker.config.get("prefix_rft", {}), resolve=True)
+    return actor_cfg
 
 
 class ActorRolloutRefWorker(VerlActorRolloutRefWorker):
@@ -33,7 +26,7 @@ class ActorRolloutRefWorker(VerlActorRolloutRefWorker):
         super().init_model()
 
         if self._is_actor:
-            actor_cfg = omega_conf_to_dataclass(self.config.actor)
+            actor_cfg = _build_prefix_actor_config(self)
             self.actor = DataParallelPPOActor(
                 config=actor_cfg, actor_module=self.actor_module_fsdp, actor_optimizer=self.actor_optimizer
             )
@@ -48,7 +41,7 @@ class AsyncActorRolloutRefWorker(VerlAsyncActorRolloutRefWorker):
         super().init_model()
 
         if self._is_actor:
-            actor_cfg = omega_conf_to_dataclass(self.config.actor)
+            actor_cfg = _build_prefix_actor_config(self)
             self.actor = DataParallelPPOActor(
                 config=actor_cfg, actor_module=self.actor_module_fsdp, actor_optimizer=self.actor_optimizer
             )

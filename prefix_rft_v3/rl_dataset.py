@@ -1,20 +1,17 @@
 import copy
 import logging
-import os
-import re
 import uuid
 from collections import defaultdict
 from typing import List, Optional, Union
 
-import datasets
 import numpy as np
 import torch
-from omegaconf import DictConfig, ListConfig
-from torch.utils.data import Dataset
+from omegaconf import DictConfig
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
 import verl.utils.torch_functional as verl_F
 from prefix_rft_v3.scheduler.global_step import BetaSampler, CTRL_MAPPING, CTRL_WRAPPER_MAPPING
+from verl.utils.dataset.rl_dataset import RLHFDataset
 from verl.utils.model import compute_position_id_with_mask
 
 logger = logging.getLogger(__name__)
@@ -92,13 +89,7 @@ def _extract_demo_correctness(demo, default=True):
     return bool(default)
 
 
-def _ensure_list_of_messages(messages):
-    if isinstance(messages, np.ndarray):
-        messages = messages.tolist()
-    return copy.deepcopy(messages)
-
-
-class PrefixRFTDataset(Dataset):
+class PrefixRFTDataset(RLHFDataset):
     def __init__(
         self,
         data_files: Union[str, List[str]],
@@ -107,34 +98,10 @@ class PrefixRFTDataset(Dataset):
         processor: Optional[ProcessorMixin] = None,
         max_samples: int = -1,
     ):
-        if not isinstance(data_files, (List, ListConfig)):
-            data_files = [data_files]
-
-        self.data_files = copy.deepcopy(data_files)
-        self.original_data_files = copy.deepcopy(data_files)
-        self.tokenizer = tokenizer
-        self.processor = processor
-        self.config = config
-        self.max_samples = max_samples
-
-        self.cache_dir = os.path.expanduser(config.get("cache_dir", "~/.cache/verl/rlhf"))
-        self.prompt_key = config.get("prompt_key", "prompt")
-        self.image_key = config.get("image_key", "images")
-        self.video_key = config.get("video_key", "videos")
-        self.max_prompt_length = config.get("max_prompt_length", 1024)
         self.max_response_length = config.get("max_response_length", 1024)
-        self.return_raw_chat = config.get("return_raw_chat", False)
-        self.return_full_prompt = config.get("return_full_prompt", False)
-        self.truncation = config.get("truncation", "error")
-        self.filter_overlong_prompts = config.get("filter_overlong_prompts", True)
-        self.filter_overlong_prompts_length = config.get("filter_overlong_prompts_length", self.max_prompt_length)
-        self.num_workers = config.get("filter_overlong_prompts_workers", max(1, os.cpu_count() // 4))
-        self.num_workers = min(self.num_workers, os.cpu_count())
-        self.dataset_num_proc = int(config.get("dataset_num_proc", 1))
-        if self.dataset_num_proc < 1:
-            self.dataset_num_proc = 1
-        self.need_tools_kwargs = config.get("need_tools_kwargs", False)
-
+        self.filter_overlong_prompts_length = config.get(
+            "filter_overlong_prompts_length", config.get("max_prompt_length", 1024)
+        )
         self.demo_ratio = config.get("demo_ratio", 1.0)
         self.demo_key = config.get("demo_key", "demos")
         self.demo_corr_key = config.get("demo_corr_key", "demos_corr")
@@ -144,52 +111,32 @@ class PrefixRFTDataset(Dataset):
         self.min_prefix_len = config.get("min_prefix_len", 1)
         self.only_keep_dp_with_demo = config.get("only_keep_dp_with_demo", False)
 
-        self.serialize_dataset = False
-        self._download()
-        self._read_files_and_tokenize()
+        super().__init__(
+            data_files=data_files,
+            tokenizer=tokenizer,
+            config=config,
+            processor=processor,
+            max_samples=max_samples,
+        )
         self._create_prefix_controller()
 
-    def _download(self, use_origin_parquet=False):
-        from verl.utils.fs import copy_to_local
-
-        data_files = self.data_files if not use_origin_parquet else self.original_data_files
-        for i, parquet_file in enumerate(data_files):
-            self.data_files[i] = copy_to_local(src=parquet_file, cache_dir=self.cache_dir)
+    def maybe_filter_out_long_prompts(self, dataframe=None):
+        original_max_prompt_length = self.max_prompt_length
+        self.max_prompt_length = self.filter_overlong_prompts_length
+        try:
+            return super().maybe_filter_out_long_prompts(dataframe)
+        finally:
+            self.max_prompt_length = original_max_prompt_length
 
     def _read_files_and_tokenize(self):
-        np.random.seed(self.config.get("seed", 1))
+        super()._read_files_and_tokenize()
+        self._postprocess_loaded_dataframe()
 
-        dataframes = []
-        for parquet_file in self.data_files:
-            dataframe = datasets.load_dataset("parquet", data_files=parquet_file)["train"]
-            dataframes.append(dataframe)
-        dataframe = datasets.concatenate_datasets(dataframes)
-
-        total = len(dataframe)
-        if self.max_samples > 0 and self.max_samples < total:
-            if self.config.get("shuffle", False):
-                seed = self.config.get("seed")
-                rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
-                indices = rng.choice(total, size=self.max_samples, replace=False)
-            else:
-                indices = np.arange(self.max_samples)
-            dataframe = dataframe.select(indices.tolist())
-
-        self.dataframe = [dict(example) for example in dataframe]
-
-        print(f"dataset len: {len(self.dataframe)}")
+    def _postprocess_loaded_dataframe(self):
+        self.dataframe = [dict(example) for example in self.dataframe]
         self._normalize_demo_columns_if_needed()
 
-        if self.filter_overlong_prompts:
-            max_prompt_length = self.filter_overlong_prompts_length
-            filtered_dataframe = []
-            for doc in self.dataframe:
-                prompt_text = self.tokenizer.apply_chat_template(doc[self.prompt_key], add_generation_prompt=True)
-                if len(prompt_text) <= max_prompt_length:
-                    filtered_dataframe.append(doc)
-            self.dataframe = filtered_dataframe
-            print(f"filter dataset len: {len(self.dataframe)}")
-
+        np.random.seed(self.config.get("seed", 1))
         for example in self.dataframe:
             example["avg_rewards"] = []
             example["prefix_ratios"] = []
@@ -199,20 +146,18 @@ class PrefixRFTDataset(Dataset):
                     example[self.demo_corr_key] = []
 
         if self.only_keep_dp_with_demo:
-            self.dataframe = [example for example in self.dataframe if len(example[self.demo_key]) > 0]
-
-        for example in self.dataframe:
-            example["uid"] = str(uuid.uuid4())
+            self.dataframe = [example for example in self.dataframe if len(example.get(self.demo_key, [])) > 0]
 
         self.uid2item_index = {}
         for i, example in enumerate(self.dataframe):
+            example["uid"] = str(uuid.uuid4())
             self.uid2item_index[example["uid"]] = i
 
         self.training_metrics = defaultdict(list)
         self.global_step = 0
 
     def _normalize_demo_columns_if_needed(self):
-        if len(self.dataframe) == 0:
+        if not self.dataframe:
             return
 
         column_names = set(self.dataframe[0].keys())
@@ -231,15 +176,12 @@ class PrefixRFTDataset(Dataset):
 
         print(f"Normalizing demonstration columns into '{self.demo_key}' and '{self.demo_corr_key}'")
 
-        demo_key = self.demo_key
-        demo_corr_key = self.demo_corr_key
-
         for example in self.dataframe:
             demos = []
             demos_corr = []
 
-            raw_demos = example.get(demo_key, [])
-            raw_corrs = example.get(demo_corr_key, [])
+            raw_demos = example.get(self.demo_key, [])
+            raw_corrs = example.get(self.demo_corr_key, [])
 
             if _is_missing_demo_value(raw_demos):
                 raw_demos = []
@@ -275,8 +217,15 @@ class PrefixRFTDataset(Dataset):
                     demos.append(demo_text)
                     demos_corr.append(bool(example.get("demo_pass", True)))
 
-            example[demo_key] = demos
-            example[demo_corr_key] = demos_corr
+            example[self.demo_key] = demos
+            example[self.demo_corr_key] = demos_corr
+
+    def _build_messages(self, example: dict):
+        example_copy = copy.deepcopy(example)
+        prompt = example_copy.get(self.prompt_key)
+        if isinstance(prompt, np.ndarray):
+            example_copy[self.prompt_key] = prompt.tolist()
+        return super()._build_messages(example_copy)
 
     def _get_column_values(self, key):
         return [example.get(key) for example in self.dataframe]
@@ -307,35 +256,6 @@ class PrefixRFTDataset(Dataset):
             high_ctrl=self.prefix_high_ctrl,
             **self.config.prefix_sampler.kwargs,
         )
-
-    def resume_dataset_state(self):
-        self.serialize_dataset = not hasattr(self, "original_data_files")
-        if not self.serialize_dataset:
-            self._download(use_origin_parquet=True)
-            self._read_files_and_tokenize()
-
-    def __len__(self):
-        return len(self.dataframe)
-
-    def _build_messages(self, example: dict):
-        messages = _ensure_list_of_messages(example[self.prompt_key])
-
-        if self.image_key in example or self.video_key in example:
-            for message in messages:
-                content = message["content"]
-                if not isinstance(content, str):
-                    continue
-                content_list = []
-                for segment in re.split("(<image>|<video>)", content):
-                    if segment == "<image>":
-                        content_list.append({"type": "image"})
-                    elif segment == "<video>":
-                        content_list.append({"type": "video"})
-                    elif segment:
-                        content_list.append({"type": "text", "text": segment})
-                message["content"] = content_list
-
-        return messages
 
     def _get_prefix_ratio(self, idx):
         return self.prefix_controller.value(
@@ -372,7 +292,7 @@ class PrefixRFTDataset(Dataset):
             return self.tokenizer.apply_chat_template(chat_with_prefix, tokenize=False)
 
     def __getitem__(self, item):
-        row_dict: dict = self.dataframe[item]
+        row_dict = copy.deepcopy(self.dataframe[item])
         messages = self._build_messages(row_dict)
 
         raw_prompt = self.tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
@@ -380,9 +300,10 @@ class PrefixRFTDataset(Dataset):
             self.tokenizer(raw_prompt, return_tensors="pt", add_special_tokens=False)["input_ids"].shape[-1]
         )
 
+        demo_count = max(self.total_demo_n, 1)
         demos = row_dict.get(self.demo_key, [])[: self.total_demo_n]
         if len(demos) == 0:
-            demos = ["" for _ in range(self.total_demo_n)]
+            demos = ["" for _ in range(demo_count)]
 
         demos_corr = row_dict.get(self.demo_corr_key, [])[: self.total_demo_n]
         if len(demos_corr) == 0:
@@ -398,7 +319,7 @@ class PrefixRFTDataset(Dataset):
             else:
                 prefix_ratio, prefix_ctrl_low, prefix_ctrl_high = self._get_prefix_ratio(item)
 
-            demo_selected_idx = int(np.random.choice([j for j in range(len(demos))]))
+            demo_selected_idx = int(np.random.randint(len(demos)))
             demo = demos[demo_selected_idx]
             demo_corr = demos_corr[demo_selected_idx]
 
@@ -457,16 +378,11 @@ class PrefixRFTDataset(Dataset):
 
         index = row_dict.get("extra_info", {}).get("index", 0)
         tools_kwargs = row_dict.get("extra_info", {}).get("tools_kwargs", {})
+        interaction_kwargs = row_dict.get("extra_info", {}).get("interaction_kwargs", {})
         need_tools_kwargs = row_dict.get("extra_info", {}).get("need_tools_kwargs", self.need_tools_kwargs)
         if need_tools_kwargs and not tools_kwargs:
             logger.warning("tools_kwargs is empty for index %s, data source: %s", index, row_dict["data_source"])
         row_dict["index"] = index
         row_dict["tools_kwargs"] = tools_kwargs
+        row_dict["interaction_kwargs"] = interaction_kwargs
         return row_dict
-
-    def __getstate__(self):
-        if not self.serialize_dataset:
-            state = self.__dict__.copy()
-            state.pop("dataframe", None)
-            return state
-        return self.__dict__.copy()

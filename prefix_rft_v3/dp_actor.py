@@ -3,6 +3,7 @@ import os
 
 import torch
 
+from prefix_rft_v3.core_algos import PREFIX_POLICY_LOSS_MODE
 from prefix_rft_v3.scheduler.global_step import CTRL_MAPPING
 from verl import DataProto
 from verl.trainer.ppo.core_algos import agg_loss, get_policy_loss_fn, kl_penalty
@@ -344,15 +345,18 @@ class DataParallelPPOActor(VerlDataParallelPPOActor):
                     loss_mode = self.config.policy_loss.get("loss_mode", "vanilla")
                     rollout_is_weights = model_inputs.get("rollout_is_weights", None)
                     policy_loss_fn = get_policy_loss_fn(loss_mode)
-                    pg_loss, pg_metrics = policy_loss_fn(
-                        old_log_prob=old_log_prob,
-                        log_prob=log_prob,
-                        advantages=advantages,
-                        response_mask=response_mask,
-                        loss_agg_mode=loss_agg_mode,
-                        config=self.config,
-                        rollout_is_weights=rollout_is_weights,
-                    )
+                    policy_loss_kwargs = {
+                        "old_log_prob": old_log_prob,
+                        "log_prob": log_prob,
+                        "advantages": advantages,
+                        "response_mask": response_mask,
+                        "loss_agg_mode": loss_agg_mode,
+                        "config": self.config,
+                        "rollout_is_weights": rollout_is_weights,
+                    }
+                    if loss_mode == PREFIX_POLICY_LOSS_MODE:
+                        policy_loss_kwargs["prefix_mask"] = prefix_mask
+                    pg_loss, pg_metrics = policy_loss_fn(**policy_loss_kwargs)
                     micro_batch_metrics.update(pg_metrics)
 
                     rollout_log_prob = model_inputs.get("rollout_log_probs", None)

@@ -178,7 +178,9 @@ def compute_advantage(
         # Initialize the mask for GRPO calculation
         grpo_calculation_mask = data.batch["response_mask"]
 
-        # Call compute_grpo_outcome_advantage with parameters matching its definition
+        # Prefix-RFT intentionally keeps ordinary GRPO grouped by uid.
+        # Prefix-specific behavior is applied later in actor-side reshape/masking on the
+        # finalized hybrid trajectory rather than in advantage computation itself.
         advantages, returns = core_algos.compute_grpo_outcome_advantage(
             token_level_rewards=data.batch["token_level_rewards"],
             response_mask=grpo_calculation_mask,
@@ -374,6 +376,28 @@ def attach_missing_non_tensor_fields(target: DataProto, source: dict[str, np.nda
             target.non_tensor_batch[key] = value
 
 
+def validate_prefix_hybrid_tensors(
+    response_mask: torch.Tensor,
+    prefix_mask: torch.Tensor,
+    prefix_relpos: torch.Tensor,
+) -> None:
+    assert response_mask.shape == prefix_mask.shape == prefix_relpos.shape, (
+        f"prefix tensor shape mismatch: {response_mask.shape=}, {prefix_mask.shape=}, {prefix_relpos.shape=}"
+    )
+    assert torch.all(prefix_mask <= response_mask), "prefix tokens must be a subset of response tokens"
+
+    prefix_positions = prefix_mask.bool()
+    if prefix_positions.any():
+        assert torch.all(response_mask[prefix_positions] == 1), "prefix tokens must participate in response loss"
+        assert torch.all(prefix_relpos[prefix_positions] >= 0), "prefix tokens must have non-negative relative positions"
+
+    continuation_positions = (response_mask == 1) & (~prefix_positions)
+    if continuation_positions.any():
+        assert torch.all(prefix_relpos[continuation_positions] == -1), (
+            "non-prefix continuation tokens must not carry prefix relative positions"
+        )
+
+
 def post_process_gen_batch(gen_batch: DataProto, pad_token_id: int, eos_token_id: int, truncate_response_len: int) -> DataProto:
     from verl.utils.model import compute_position_id_with_mask
     from torch.nn.utils.rnn import pad_sequence
@@ -389,7 +413,12 @@ def post_process_gen_batch(gen_batch: DataProto, pad_token_id: int, eos_token_id
 
     if not torch.is_tensor(raw_prompt_lengths):
         raw_prompt_lengths = torch.tensor(raw_prompt_lengths, device=prompts.device)
+    else:
+        raw_prompt_lengths = raw_prompt_lengths.to(prompts.device)
+    if not torch.is_tensor(demo_lens):
         demo_lens = torch.tensor(demo_lens, device=prompts.device)
+    else:
+        demo_lens = demo_lens.to(prompts.device)
 
     batch_size, _ = prompts.size()
     valid_lengths = (prompts != pad_token_id).sum(dim=-1)
@@ -489,6 +518,7 @@ def post_process_gen_batch(gen_batch: DataProto, pad_token_id: int, eos_token_id
     non_prefix_and_non_pad = (prefix_mask == 0) & (response_attention_mask == 1)
     relpos[non_prefix_and_non_pad] = -1.0
     prefix_relpos = relpos * response_attention_mask.float()
+    validate_prefix_hybrid_tensors(response_mask=response_mask, prefix_mask=prefix_mask, prefix_relpos=prefix_relpos)
 
     non_tensor_batch = dict(gen_batch.non_tensor_batch)
     tensors = {

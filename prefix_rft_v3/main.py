@@ -1,5 +1,6 @@
 import hydra
 
+import prefix_rft_v3.core_algos  # noqa: F401
 from verl.experimental.reward_loop import migrate_legacy_reward_impl
 from verl.trainer.main_ppo import run_ppo
 from verl.utils.device import auto_set_device
