@@ -451,6 +451,24 @@ Constraints:
   - validation path is now closer to upstream PPO behavior
   - prefix-specific batch fields remain isolated to the training dataset where they are actually used
 
+## Implementation Update - Add Dedicated Prefix Verify Script
+
+- Added `prefix-rft-jobs/code-qwen3-0p6b-prefix-rft-v3-verify.sh`.
+- This wrapper keeps the formal `code-qwen3-0p6b-prefix-rft-v3.sh` launch path unchanged and only overrides a small verification profile:
+  - `trainer.total_epochs=1`
+  - `trainer.total_training_steps=5`
+  - `trainer.val_before_train=true`
+  - `trainer.test_freq=1000`
+  - `trainer.save_freq=5`
+  - `data.train_max_samples=64`
+  - `data.val_max_samples=64`
+  - `data.val_batch_size=64`
+- Purpose:
+  - validate val-before-train
+  - validate prefix rollout/reorder path
+  - validate real reward execution
+  - validate first actor update and one save cycle with minimal cost
+
 ## Implementation Update - Dataset Alignment With Upstream RLHFDataset
 
 - Refactored `prefix_rft_v3/rl_dataset.py` so `PrefixRFTDataset` now subclasses upstream `RLHFDataset` instead of reimplementing the whole loading stack.
