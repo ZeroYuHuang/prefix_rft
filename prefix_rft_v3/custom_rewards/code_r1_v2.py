@@ -33,6 +33,7 @@ def _score_code(solution_text, ground_truth, extra_info, timeout, format_reward,
             "acc": 0.0,
             "formatted": 0.0,
             "passed": 0.0,
+            "valid_ground_truth": 1.0,
         }
 
     solution_code = _extract_code(response_text)
@@ -42,6 +43,7 @@ def _score_code(solution_text, ground_truth, extra_info, timeout, format_reward,
             "acc": 0.0,
             "formatted": 0.0,
             "passed": 0.0,
+            "valid_ground_truth": 1.0,
         }
 
     try:
