@@ -291,7 +291,7 @@ def _score_code_with_extractor(solution_text, ground_truth, extra_info, timeout,
     solution_code = raw_code if raw_formatted else normalized_code
     if not solution_code:
         return _build_result(
-            score=-answer_reward,
+            score=-answer_reward + format_score,
             acc=0.0,
             formatted=raw_formatted,
             passed=0.0,
@@ -328,7 +328,7 @@ def _score_code_with_extractor(solution_text, ground_truth, extra_info, timeout,
             rescued_by_normalization=rescued_by_normalization,
         )
 
-    reward = answer_reward if passed else -answer_reward
+    reward = (answer_reward if passed else -answer_reward) + format_score
     return _build_result(
         score=reward,
         acc=passed,
