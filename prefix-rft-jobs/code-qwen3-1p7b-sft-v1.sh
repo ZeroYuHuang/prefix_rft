@@ -141,4 +141,4 @@ SFT_ARGS=(
 
 cd "${REPO_ROOT}"
 run_cmd torchrun --standalone --nnodes=1 --nproc_per_node="${N_GPUS_PER_NODE}" \
-    -m verl.trainer.sft_trainer "${SFT_ARGS[@]}" "$@"
+    -m prefix_rft_v3.sft_trainer "${SFT_ARGS[@]}" "$@"
