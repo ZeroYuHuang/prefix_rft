@@ -29,11 +29,12 @@ mkdir -p "${CKPT_DIR}" "${WANDB_RUN_DIR}" "${LOCAL_RAY_TMP}"
 
 export RAY_TEMP_DIR="${LOCAL_RAY_TMP}"
 export WANDB_DIR="${WANDB_RUN_DIR}"
+export WANDB_MODE="${WANDB_MODE:-offline}"
 export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 
 TRAIN_ARGS=(
     "data.train_files=${DATA_ROOT}/train.parquet"
-    "data.val_files=${DATA_ROOT}/test.parquet"
+    "data.val_files=${DATA_ROOT}/val.parquet"
     "data.max_prompt_length=2048"
     "data.max_response_length=4096"
     "data.train_batch_size=16"
@@ -72,7 +73,7 @@ TRAIN_ARGS=(
     "algorithm.adv_estimator=grpo"
     "algorithm.norm_adv_by_std_in_grpo=false"
     "algorithm.kl_ctrl.kl_coef=0.0"
-    "trainer.project_name=prefix_rft_v3_code"
+    "trainer.project_name=prft-coder1"
     "trainer.experiment_name=${RUN_NAME}"
     "trainer.logger=${LOGGER_LIST}"
     "trainer.log_val_generations=0"

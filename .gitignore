@@ -130,3 +130,4 @@ logs
 log
 outputs
 .history
+scripts/.wandb_sync.env
