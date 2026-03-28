@@ -5,6 +5,7 @@ import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 
+from prefix_rft_v3.response_normalization import normalize_code_response_text
 from verl.utils.reward_score import _default_compute_score
 
 _ERROR_MSG_PREFIX = "Failed to execute program: "
@@ -67,18 +68,27 @@ def _validate_response_structure(response_text):
 
 
 def _extract_answer_block(response_text):
+    response_text = response_text or ""
     matches = list(_ANSWER_PATTERN.finditer(response_text))
     if matches:
         return matches[-1].group(1).strip()
     return response_text
 
 
+def _extract_all_code_blocks(text):
+    code_blocks = _CODE_PATTERN.findall(text or "")
+    return [block.strip() for block in code_blocks if block.strip()]
+
+
 def _extract_code(response_text):
+    response_text = response_text or ""
     answer_text = _extract_answer_block(response_text)
-    code_blocks = _CODE_PATTERN.findall(answer_text)
+    code_blocks = _extract_all_code_blocks(answer_text)
+    if not code_blocks and answer_text != response_text:
+        code_blocks = _extract_all_code_blocks(response_text)
     if not code_blocks:
         return ""
-    return "\n\n".join(block.strip() for block in code_blocks if block.strip()).strip()
+    return "\n\n".join(code_blocks).strip()
 
 
 def _load_ground_truth(ground_truth):
@@ -214,68 +224,133 @@ def _exec_stdio(solution_code, inputs, outputs, timeout):
     return True, {}
 
 
-def _score_code(solution_text, ground_truth, extra_info, timeout, format_reward, answer_reward):
-    response_text = solution_text or ""
-    if not _validate_response_structure(response_text):
-        return {
-            "score": -(answer_reward + format_reward),
-            "acc": 0.0,
-            "formatted": 0.0,
-            "passed": 0.0,
-            "valid_ground_truth": 1.0,
-        }
+def _build_result(
+    *,
+    score,
+    acc,
+    formatted,
+    passed,
+    valid_ground_truth,
+    format_score,
+    normalized_formatted,
+    rescued_by_normalization,
+):
+    return {
+        "score": float(score),
+        "acc": float(acc),
+        "formatted": float(formatted),
+        "passed": float(passed),
+        "format_score": float(format_score),
+        "normalized_formatted": float(normalized_formatted),
+        "rescued_by_normalization": float(rescued_by_normalization),
+        "valid_ground_truth": float(valid_ground_truth),
+    }
 
-    solution_code = _extract_code(response_text)
-    if not solution_code:
-        return {
-            "score": -(answer_reward + format_reward),
-            "acc": 0.0,
-            "formatted": 0.0,
-            "passed": 0.0,
-            "valid_ground_truth": 1.0,
-        }
 
-    try:
-        ground_truth_obj = _load_ground_truth(ground_truth)
-    except Exception:
-        return {
-            "score": 0.0,
-            "acc": 0.0,
-            "formatted": 1.0,
-            "passed": 0.0,
-            "valid_ground_truth": 0.0,
-        }
+def _build_non_code_result(score):
+    return _build_result(
+        score=float(score),
+        acc=float(score),
+        formatted=0.0,
+        passed=0.0,
+        valid_ground_truth=1.0,
+        format_score=0.0,
+        normalized_formatted=0.0,
+        rescued_by_normalization=0.0,
+    )
 
+
+def _run_code_against_ground_truth(solution_code, ground_truth_obj, extra_info, timeout):
     try:
         if "functional" in ground_truth_obj:
-            passed, _ = _exec_functional(solution_code, ground_truth_obj["functional"], timeout=timeout)
-        elif "pytest" in ground_truth_obj:
-            passed, _ = _exec_pytest(solution_code, ground_truth_obj["pytest"], timeout=timeout)
-        elif "inputs" in ground_truth_obj and "outputs" in ground_truth_obj:
-            passed, _ = _exec_stdio(solution_code, ground_truth_obj["inputs"], ground_truth_obj["outputs"], timeout=timeout)
-        else:
-            return {
-                "score": 0.0,
-                "acc": 0.0,
-                "formatted": 1.0,
-                "passed": 0.0,
-                "valid_ground_truth": 0.0,
-            }
+            return _exec_functional(solution_code, ground_truth_obj["functional"], timeout=timeout)[0]
+        if "pytest" in ground_truth_obj:
+            return _exec_pytest(solution_code, ground_truth_obj["pytest"], timeout=timeout)[0]
+        if "inputs" in ground_truth_obj and "outputs" in ground_truth_obj:
+            return _exec_stdio(solution_code, ground_truth_obj["inputs"], ground_truth_obj["outputs"], timeout=timeout)[0]
+        return None
     except Exception as exc:
         prompt_text = extra_info.get("prompt") or extra_info.get("question") or ""
         print(f"code reward execution failed: {exc}")
         if prompt_text:
             print(prompt_text)
-        passed = False
+        return False
 
-    reward = format_reward + answer_reward if passed else format_reward
-    return {
-        "score": reward,
-        "acc": float(passed),
-        "formatted": 1.0,
-        "passed": float(passed),
-        "valid_ground_truth": 1.0,
-    }
+
+def _score_code_with_extractor(solution_text, ground_truth, extra_info, timeout, format_reward, answer_reward, extract_code_fn):
+    response_text = solution_text or ""
+    raw_code = extract_code_fn(response_text)
+    raw_formatted = bool(raw_code)
+    format_score = format_reward if raw_formatted else -format_reward
+
+    normalized_text, _ = normalize_code_response_text(response_text)
+    normalized_code = extract_code_fn(normalized_text)
+    normalized_formatted = bool(normalized_code)
+    rescued_by_normalization = (not raw_formatted) and normalized_formatted
+
+    solution_code = raw_code if raw_formatted else normalized_code
+    if not solution_code:
+        return _build_result(
+            score=-answer_reward,
+            acc=0.0,
+            formatted=raw_formatted,
+            passed=0.0,
+            valid_ground_truth=1.0,
+            format_score=format_score,
+            normalized_formatted=normalized_formatted,
+            rescued_by_normalization=rescued_by_normalization,
+        )
+
+    try:
+        ground_truth_obj = _load_ground_truth(ground_truth)
+    except Exception:
+        return _build_result(
+            score=0.0,
+            acc=0.0,
+            formatted=raw_formatted,
+            passed=0.0,
+            valid_ground_truth=0.0,
+            format_score=format_score,
+            normalized_formatted=normalized_formatted,
+            rescued_by_normalization=rescued_by_normalization,
+        )
+
+    passed = _run_code_against_ground_truth(solution_code, ground_truth_obj, extra_info, timeout)
+    if passed is None:
+        return _build_result(
+            score=0.0,
+            acc=0.0,
+            formatted=raw_formatted,
+            passed=0.0,
+            valid_ground_truth=0.0,
+            format_score=format_score,
+            normalized_formatted=normalized_formatted,
+            rescued_by_normalization=rescued_by_normalization,
+        )
+
+    reward = answer_reward if passed else -answer_reward
+    return _build_result(
+        score=reward,
+        acc=passed,
+        formatted=raw_formatted,
+        passed=passed,
+        valid_ground_truth=1.0,
+        format_score=format_score,
+        normalized_formatted=normalized_formatted,
+        rescued_by_normalization=rescued_by_normalization,
+    )
+
+
+def _score_code(solution_text, ground_truth, extra_info, timeout, format_reward, answer_reward):
+    return _score_code_with_extractor(
+        solution_text=solution_text,
+        ground_truth=ground_truth,
+        extra_info=extra_info,
+        timeout=timeout,
+        format_reward=format_reward,
+        answer_reward=answer_reward,
+        extract_code_fn=_extract_code,
+    )
 
 
 def rfn(
@@ -296,7 +371,7 @@ def rfn(
             ground_truth=ground_truth,
             extra_info=extra_info,
         )
-        return {"score": float(score), "acc": float(score)}
+        return _build_non_code_result(score)
 
     return _score_code(
         solution_text=response_str or solution_str,
