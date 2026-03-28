@@ -10,6 +10,7 @@ from omegaconf import DictConfig
 from transformers import PreTrainedTokenizer, ProcessorMixin
 
 import verl.utils.torch_functional as verl_F
+from prefix_rft_v3.templates import Qwen3_8B_Base_chat_template
 from prefix_rft_v3.scheduler.global_step import BetaSampler, CTRL_MAPPING, CTRL_WRAPPER_MAPPING
 from verl.utils.dataset.rl_dataset import RLHFDataset
 from verl.utils.model import compute_position_id_with_mask
@@ -157,6 +158,14 @@ class PrefixRFTDataset(RLHFDataset):
         self.training_metrics = defaultdict(list)
         self.global_step = 0
 
+    def _should_fallback_to_qwen_prefix_template(self, exc: Exception) -> bool:
+        if not isinstance(exc, ValueError):
+            return False
+        if "continue_final_message" not in str(exc):
+            return False
+        tokenizer_name_or_path = getattr(self.tokenizer, "name_or_path", "") or ""
+        return "Qwen" in tokenizer_name_or_path
+
     def _normalize_demo_columns_if_needed(self):
         if not self.dataframe:
             return
@@ -288,6 +297,18 @@ class PrefixRFTDataset(RLHFDataset):
         chat_with_prefix.append({"role": "assistant", "content": prefix})
         try:
             return self.tokenizer.apply_chat_template(chat_with_prefix, continue_final_message=True, tokenize=False)
+        except ValueError as exc:
+            if self._should_fallback_to_qwen_prefix_template(exc):
+                logger.warning(
+                    "Falling back to custom Qwen prefix chat template after continue_final_message rendering failed."
+                )
+                return self.tokenizer.apply_chat_template(
+                    chat_with_prefix,
+                    chat_template=Qwen3_8B_Base_chat_template,
+                    continue_final_message=True,
+                    tokenize=False,
+                )
+            raise
         except TypeError:
             logger.warning("Tokenizer does not support continue_final_message; falling back to default rendering.")
             return self.tokenizer.apply_chat_template(chat_with_prefix, tokenize=False)
