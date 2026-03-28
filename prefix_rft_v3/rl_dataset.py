@@ -110,6 +110,7 @@ class PrefixRFTDataset(RLHFDataset):
         self.num_empty_prefix = config.get("num_empty_prefix", 0)
         self.min_prefix_len = config.get("min_prefix_len", 1)
         self.only_keep_dp_with_demo = config.get("only_keep_dp_with_demo", False)
+        self.is_train = bool(config.get("is_train", True))
 
         super().__init__(
             data_files=data_files,
@@ -145,7 +146,7 @@ class PrefixRFTDataset(RLHFDataset):
                 if self.demo_corr_key in example:
                     example[self.demo_corr_key] = []
 
-        if self.only_keep_dp_with_demo:
+        if self.only_keep_dp_with_demo and self.is_train:
             self.dataframe = [example for example in self.dataframe if len(example.get(self.demo_key, [])) > 0]
 
         self.uid2item_index = {}

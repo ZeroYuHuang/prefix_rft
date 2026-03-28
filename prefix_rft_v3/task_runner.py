@@ -239,6 +239,8 @@ class PrefixRFTTaskRunner:
             is_train=True,
             max_samples=config.data.get("train_max_samples", -1),
         )
+        if hasattr(train_dataset, "is_train"):
+            train_dataset.is_train = True
         val_dataset = create_rl_dataset(
             config.data.val_files,
             config.data,
@@ -247,6 +249,8 @@ class PrefixRFTTaskRunner:
             is_train=False,
             max_samples=config.data.get("val_max_samples", -1),
         )
+        if hasattr(val_dataset, "is_train"):
+            val_dataset.is_train = False
         train_sampler = create_rl_sampler(config.data, train_dataset)
 
         trainer_cls = None
