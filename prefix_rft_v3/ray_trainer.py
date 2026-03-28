@@ -288,12 +288,19 @@ def compute_prefix_reorder_indices(batch_size: int, rollout_n: int, num_prefix: 
     return torch.tensor(indices, dtype=torch.long)
 
 
+def reorder_dataproto_inplace(batch: DataProto, indices: torch.Tensor) -> None:
+    indices_np = indices.detach().cpu().numpy()
+    if batch.batch is not None:
+        batch.batch = batch.batch[indices]
+    batch.non_tensor_batch = {key: val[indices_np] for key, val in batch.non_tensor_batch.items()}
+
+
 def reorder_batch_randomly(batch: DataProto) -> torch.Tensor:
     batch_size = len(batch)
     random_indices = torch.randperm(batch_size)
     reverse_indices = torch.empty_like(random_indices)
     reverse_indices[random_indices] = torch.arange(batch_size)
-    batch.reorder(random_indices)
+    reorder_dataproto_inplace(batch, random_indices)
     return reverse_indices
 
 
@@ -310,6 +317,7 @@ def build_prefix_slot_batches(batch: DataProto, tokenizer) -> tuple[list[DataPro
 
     for prefix_idx in range(num_prefix):
         slot_non_tensors: dict[str, np.ndarray] = {}
+        slot_tensors: dict[str, torch.Tensor] = {}
         raw_prompts = []
         raw_prompt_lengths = []
 
@@ -345,7 +353,11 @@ def build_prefix_slot_batches(batch: DataProto, tokenizer) -> tuple[list[DataPro
         slot_non_tensors["prefix_ctrl_low"] = np.array(batch.non_tensor_batch[f"prefix_ctrl_low_{prefix_idx}"], dtype=object)
         slot_non_tensors["prefix_ctrl_high"] = np.array(batch.non_tensor_batch[f"prefix_ctrl_high_{prefix_idx}"], dtype=object)
 
-        slot_batch = DataProto.from_dict(non_tensors=slot_non_tensors, meta_info=batch.meta_info)
+        slot_tensors["input_ids"] = batch.batch[f"input_ids_{prefix_idx}"]
+        slot_tensors["attention_mask"] = batch.batch[f"attention_mask_{prefix_idx}"]
+        slot_tensors["position_ids"] = batch.batch[f"position_ids_{prefix_idx}"]
+
+        slot_batch = DataProto.from_dict(tensors=slot_tensors, non_tensors=slot_non_tensors, meta_info=batch.meta_info)
         slot_batches.append(slot_batch)
 
         slot_prefix_uid = slot_non_tensors["prefix_uid"]
@@ -837,12 +849,12 @@ class RayPPOTrainer:
         reorder_indices = compute_prefix_reorder_indices(
             batch_size=original_batch_size, rollout_n=rollout_n, num_prefix=num_prefix
         )
-        repeated.reorder(reorder_indices)
+        reorder_dataproto_inplace(repeated, reorder_indices)
         preserved_non_tensors = {key: value.copy() for key, value in repeated.non_tensor_batch.items()}
 
         reverse_indices = reorder_batch_randomly(repeated)
         gen_batch_output = self.async_rollout_manager.generate_sequences(repeated)
-        gen_batch_output.reorder(reverse_indices)
+        reorder_dataproto_inplace(gen_batch_output, reverse_indices)
 
         truncate_response_len = self.config.actor_rollout_ref.rollout.get(
             "truncate_length", self.config.data.max_response_length
