@@ -13,6 +13,7 @@ RUN_ROOT="${RESULT_ROOT}/${RUN_NAME}"
 INPUT_PATH="${INPUT_PATH:-${DATA_ROOT}/val.parquet}"
 OUTPUT_PATH="${OUTPUT_PATH:-${RUN_ROOT}/val_generations.parquet}"
 LOCAL_RAY_TMP="${LOCAL_RAY_TMP:-/tmp/prefix-rft-generate-ray}"
+LOCAL_STAGE_ROOT="${LOCAL_STAGE_ROOT:-/tmp/prefix-rft-offline-staging}"
 
 run_cmd() {
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -97,7 +98,30 @@ fi
 
 MODEL_PATH="$(resolve_model_path)"
 
-mkdir -p "${RUN_ROOT}" "$(dirname -- "${OUTPUT_PATH}")" "${LOCAL_RAY_TMP}"
+if [[ -n "${LOCAL_OUTPUT_PATH:-}" ]]; then
+    CREATED_LOCAL_STAGE_DIR=0
+else
+    LOCAL_OUTPUT_PATH="${LOCAL_STAGE_ROOT}/${RUN_NAME}/$(basename -- "${OUTPUT_PATH}")"
+    CREATED_LOCAL_STAGE_DIR=1
+fi
+
+LOCAL_OUTPUT_DIR=$(dirname -- "${LOCAL_OUTPUT_PATH}")
+
+cleanup_local_stage() {
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+        return
+    fi
+    if [[ "${KEEP_LOCAL_STAGE:-0}" == "1" ]]; then
+        return
+    fi
+    if [[ "${CREATED_LOCAL_STAGE_DIR:-0}" == "1" && -d "${LOCAL_OUTPUT_DIR}" ]]; then
+        rm -rf "${LOCAL_OUTPUT_DIR}"
+    fi
+}
+
+trap cleanup_local_stage EXIT
+
+mkdir -p "${RUN_ROOT}" "$(dirname -- "${OUTPUT_PATH}")" "${LOCAL_RAY_TMP}" "${LOCAL_OUTPUT_DIR}"
 
 export RAY_TEMP_DIR="${LOCAL_RAY_TMP}"
 export TOKENIZERS_PARALLELISM=true
@@ -119,8 +143,17 @@ GEN_ARGS=(
     "actor_rollout_ref.rollout.max_num_batched_tokens=${MAX_NUM_BATCHED_TOKENS:-32768}"
     "data.train_files=${INPUT_PATH}"
     "data.prompt_key=prompt"
-    "+data.output_path=${OUTPUT_PATH}"
+    "+data.output_path=${LOCAL_OUTPUT_PATH}"
 )
 
 cd "${REPO_ROOT}"
 run_cmd python3 -m verl.trainer.main_generation_server "${GEN_ARGS[@]}" "$@"
+
+if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    printf 'cp -f %q %q\n' "${LOCAL_OUTPUT_PATH}" "${OUTPUT_PATH}"
+    exit 0
+fi
+
+mkdir -p "$(dirname -- "${OUTPUT_PATH}")"
+cp -f "${LOCAL_OUTPUT_PATH}" "${OUTPUT_PATH}"
+echo "Copied generation output to ${OUTPUT_PATH}"
