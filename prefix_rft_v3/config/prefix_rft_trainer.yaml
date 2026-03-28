@@ -61,6 +61,9 @@ prefix_rft:
   prefix_low_ctrl:
     kwargs:
       init: 0.2
+      target: 0.0
+      n_steps: 10000
+      warmup_ratio: 0.0
   prefix_high_ctrl_type: const
   prefix_high_ctrl:
     kwargs:
