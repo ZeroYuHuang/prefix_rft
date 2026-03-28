@@ -2,6 +2,7 @@ from omegaconf import OmegaConf, open_dict
 
 from prefix_rft_v3.core_algos import PREFIX_POLICY_LOSS_MODE
 from prefix_rft_v3.dp_actor import DataParallelPPOActor
+from verl.single_controller.base.decorator import Dispatch, register
 from verl.utils.config import omega_conf_to_dataclass
 from verl.workers.fsdp_workers import ActorRolloutRefWorker as VerlActorRolloutRefWorker
 from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker as VerlAsyncActorRolloutRefWorker
@@ -21,6 +22,7 @@ def _build_prefix_actor_config(worker):
 
 
 class ActorRolloutRefWorker(VerlActorRolloutRefWorker):
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
         _inject_prefix_actor_config(self)
         super().init_model()
@@ -36,6 +38,7 @@ class ActorRolloutRefWorker(VerlActorRolloutRefWorker):
 
 
 class AsyncActorRolloutRefWorker(VerlAsyncActorRolloutRefWorker):
+    @register(dispatch_mode=Dispatch.ONE_TO_ALL)
     def init_model(self):
         _inject_prefix_actor_config(self)
         super().init_model()
