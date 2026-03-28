@@ -435,6 +435,22 @@ Constraints:
 - Remaining work after this pass is mainly runtime validation on GPU.
   - The next check should be a real prefix smoke run to confirm the HF dataset pickling failure is gone and first `update_actor` completes.
 
+## Implementation Update - Validation Dataset Split Back To Upstream
+
+- Adjusted `prefix_rft_v3/task_runner.py` so prefix mode no longer forces both train and val onto `PrefixRFTDataset`.
+- Current dataset split behavior is now:
+  - train dataset uses `pkg://prefix_rft_v3.rl_dataset:PrefixRFTDataset`
+  - val dataset falls back to upstream `verl.utils.dataset.rl_dataset.RLHFDataset`
+- `return_raw_chat=True` is still preserved for both train and val so agent-loop rollout keeps working.
+- Motivation:
+  - validation never consumes prefix-specific slot tensors
+  - using `PrefixRFTDataset` for val was emitting top-level `input_ids` / `attention_mask` / `position_ids`
+  - those prompt-side tensors conflicted with rollout output tensors during `_validate()` union, causing:
+    - `AssertionError: input_ids in tensor_dict1 and tensor_dict2 are not the same object`
+- Expected impact:
+  - validation path is now closer to upstream PPO behavior
+  - prefix-specific batch fields remain isolated to the training dataset where they are actually used
+
 ## Implementation Update - Dataset Alignment With Upstream RLHFDataset
 
 - Refactored `prefix_rft_v3/rl_dataset.py` so `PrefixRFTDataset` now subclasses upstream `RLHFDataset` instead of reimplementing the whole loading stack.

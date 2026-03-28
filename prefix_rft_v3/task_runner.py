@@ -164,10 +164,6 @@ class PrefixRFTTaskRunner:
         if config.get("prefix_rft", {}).get("enable", False):
             prefix_cfg = config.get("prefix_rft", {})
             with open_dict(config.data):
-                if "custom_cls" not in config.data or config.data.custom_cls is None:
-                    config.data.custom_cls = {}
-                config.data.custom_cls.path = "pkg://prefix_rft_v3.rl_dataset"
-                config.data.custom_cls.name = "PrefixRFTDataset"
                 config.data.return_raw_chat = True
 
                 prefix_defaults = {
@@ -237,6 +233,21 @@ class PrefixRFTTaskRunner:
             train_data_config.is_train = True
         with open_dict(val_data_config):
             val_data_config.is_train = False
+
+        if config.get("prefix_rft", {}).get("enable", False):
+            with open_dict(train_data_config):
+                if "custom_cls" not in train_data_config or train_data_config.custom_cls is None:
+                    train_data_config.custom_cls = {}
+                train_data_config.custom_cls.path = "pkg://prefix_rft_v3.rl_dataset"
+                train_data_config.custom_cls.name = "PrefixRFTDataset"
+                train_data_config.return_raw_chat = True
+
+            with open_dict(val_data_config):
+                if "custom_cls" not in val_data_config or val_data_config.custom_cls is None:
+                    val_data_config.custom_cls = {}
+                val_data_config.custom_cls.path = None
+                val_data_config.custom_cls.name = None
+                val_data_config.return_raw_chat = True
 
         train_dataset = create_rl_dataset(
             config.data.train_files,
