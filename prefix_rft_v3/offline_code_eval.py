@@ -40,10 +40,12 @@ def _summarize_bucket(items):
     }
 
 
-def _score_single_row(row, response_key, reasoning_key, reward_fn):
+def _score_single_row(row, response_key, reasoning_key, reward_fn, normalize_responses):
     responses = _normalize_responses(row.get(response_key))
-    reasoning_contents = _normalize_responses(row.get(reasoning_key))
-    responses, changed = normalize_code_response_list(responses, reasoning_contents=reasoning_contents)
+    changed = False
+    if normalize_responses:
+        reasoning_contents = _normalize_responses(row.get(reasoning_key))
+        responses, changed = normalize_code_response_list(responses, reasoning_contents=reasoning_contents)
 
     if not responses:
         result = {
@@ -91,6 +93,7 @@ def main():
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--progress-desc", default="offline_eval")
     parser.add_argument("--no-progress", action="store_true")
+    parser.add_argument("--no-normalize-responses", action="store_true")
     parser.add_argument(
         "--reward-path",
         default="pkg://prefix_rft_v3.custom_rewards.code_r1_v2",
@@ -112,16 +115,29 @@ def main():
 
     show_progress = not args.no_progress
     num_workers = max(1, args.num_workers)
+    normalize_responses = not args.no_normalize_responses
 
     def _result_iterable():
         if num_workers == 1:
             for row in rows:
-                yield _score_single_row(row, args.response_key, args.reasoning_key, reward_fn)
+                yield _score_single_row(
+                    row,
+                    args.response_key,
+                    args.reasoning_key,
+                    reward_fn,
+                    normalize_responses,
+                )
             return
 
         with ThreadPoolExecutor(max_workers=num_workers) as executor:
             yield from executor.map(
-                lambda row: _score_single_row(row, args.response_key, args.reasoning_key, reward_fn),
+                lambda row: _score_single_row(
+                    row,
+                    args.response_key,
+                    args.reasoning_key,
+                    reward_fn,
+                    normalize_responses,
+                ),
                 rows,
             )
 
@@ -150,6 +166,7 @@ def main():
             "reward_path": args.reward_path,
             "reward_name": args.reward_name,
             "num_workers": num_workers,
+            "normalize_responses": normalize_responses,
             "num_rows": len(detail_rows),
             "normalized_rows": normalized_rows,
         },

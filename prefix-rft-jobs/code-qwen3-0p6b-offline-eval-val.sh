@@ -16,6 +16,7 @@ DEFAULT_NUM_WORKERS=$(( NPROC > 96 ? 96 : NPROC ))
 NUM_WORKERS="${NUM_WORKERS:-${DEFAULT_NUM_WORKERS}}"
 PROGRESS_DESC="${PROGRESS_DESC:-offline_eval}"
 SHOW_PROGRESS="${SHOW_PROGRESS:-1}"
+NORMALIZE_RESPONSES="${NORMALIZE_RESPONSES:-1}"
 
 run_cmd() {
     if [[ "${DRY_RUN:-0}" == "1" ]]; then
@@ -61,6 +62,11 @@ if [[ "${SHOW_PROGRESS}" == "0" ]]; then
     PROGRESS_ARGS+=(--no-progress)
 fi
 
+NORMALIZE_ARGS=()
+if [[ "${NORMALIZE_RESPONSES}" == "0" ]]; then
+    NORMALIZE_ARGS+=(--no-normalize-responses)
+fi
+
 cd "${REPO_ROOT}"
 run_cmd env CODER1_EXEC="${CODER1_EXEC}" python3 -m prefix_rft_v3.offline_code_eval \
     --input-path "${INPUT_PATH}" \
@@ -72,6 +78,7 @@ run_cmd env CODER1_EXEC="${CODER1_EXEC}" python3 -m prefix_rft_v3.offline_code_e
     --reward-path "${REWARD_PATH}" \
     --reward-name "${REWARD_NAME}" \
     "${PROGRESS_ARGS[@]}" \
+    "${NORMALIZE_ARGS[@]}" \
     "$@"
 
 if [[ "${DRY_RUN:-0}" == "1" ]]; then
