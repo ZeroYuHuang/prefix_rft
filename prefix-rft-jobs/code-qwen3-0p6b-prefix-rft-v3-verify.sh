@@ -5,6 +5,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 RUN_NAME="${RUN_NAME:-verify-prefix-rft-v3-$(date "+%y-%m-%d-%H-%M-%S")}"
 
+export RUN_NAME
 export WANDB_MODE="${WANDB_MODE:-offline}"
 export LOGGER_LIST="${LOGGER_LIST:-[console,wandb]}"
 

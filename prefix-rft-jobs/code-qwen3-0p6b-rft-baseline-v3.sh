@@ -8,12 +8,32 @@ MODEL_PATH="/mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/models/
 DATA_ROOT="/mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/datasets/prefix-rft-code"
 RESULT_ROOT="/mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/prft-results"
 
-RUN_NAME="${RUN_NAME:-qwen3-0p6b-code-rft-baseline-v3-$(date "+%y-%m-%d-%H-%M-%S")}"
+RUN_NAME="${RUN_NAME:-qwen3-0p6b-code-rft-baseline-v3-$(date "+%y-%m-%d-%H-%M-%S")}" 
 RUN_ROOT="${RESULT_ROOT}/${RUN_NAME}"
 CKPT_DIR="${RUN_ROOT}/checkpoints"
 WANDB_RUN_DIR="${RUN_ROOT}/wandb"
 LOCAL_RAY_TMP="${LOCAL_RAY_TMP:-/tmp/prefix-rft-ray-v3}"
 LOGGER_LIST="${LOGGER_LIST:-[console,wandb]}"
+
+TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-1500}"
+SAVE_FREQ="${SAVE_FREQ:-100}"
+TEST_FREQ="${TEST_FREQ:-100}"
+
+MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-8192}"
+MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-8192}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
+
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-128}"
+VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
+
+ROLLOUT_N="${ROLLOUT_N:-8}"
+
+TARGET_NORMALIZED_PPO_MINI_BATCH_SIZE_PER_GPU="${TARGET_NORMALIZED_PPO_MINI_BATCH_SIZE_PER_GPU:-64}"
+PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-64}"
+PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-65536}"
+LOG_PROB_MAX_TOKEN_LEN_PER_GPU="${LOG_PROB_MAX_TOKEN_LEN_PER_GPU:-65536}"
+ROLLOUT_MAX_BATCHED_TOKENS="${ROLLOUT_MAX_BATCHED_TOKENS:-131072}"
+ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.75}"
 
 if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     N_GPUS_PER_NODE=$(python3 - <<'PY'
@@ -25,6 +45,8 @@ else
     N_GPUS_PER_NODE=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
 fi
 
+PPO_MINI_BATCH_SIZE="${PPO_MINI_BATCH_SIZE:-$((TARGET_NORMALIZED_PPO_MINI_BATCH_SIZE_PER_GPU * N_GPUS_PER_NODE / ROLLOUT_N))}"
+
 mkdir -p "${CKPT_DIR}" "${WANDB_RUN_DIR}" "${LOCAL_RAY_TMP}"
 
 export RAY_TEMP_DIR="${LOCAL_RAY_TMP}"
@@ -35,10 +57,10 @@ export VLLM_ALLOW_LONG_MAX_MODEL_LEN=1
 TRAIN_ARGS=(
     "data.train_files=${DATA_ROOT}/train.parquet"
     "data.val_files=${DATA_ROOT}/val.parquet"
-    "data.max_prompt_length=2048"
-    "data.max_response_length=4096"
-    "data.train_batch_size=16"
-    "data.val_batch_size=256"
+    "data.max_prompt_length=${MAX_PROMPT_LENGTH}"
+    "data.max_response_length=${MAX_RESPONSE_LENGTH}"
+    "data.train_batch_size=${TRAIN_BATCH_SIZE}"
+    "data.val_batch_size=${VAL_BATCH_SIZE}"
     "data.filter_overlong_prompts=true"
     "data.filter_overlong_prompts_workers=16"
     "data.trust_remote_code=true"
@@ -49,20 +71,23 @@ TRAIN_ARGS=(
     "actor_rollout_ref.model.use_remove_padding=true"
     "actor_rollout_ref.model.enable_gradient_checkpointing=true"
     "actor_rollout_ref.actor.optim.lr=1e-6"
-    "actor_rollout_ref.actor.ppo_mini_batch_size=64"
-    "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=64"
+    "actor_rollout_ref.actor.ppo_mini_batch_size=${PPO_MINI_BATCH_SIZE}"
+    "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=${PPO_MICRO_BATCH_SIZE_PER_GPU}"
     "actor_rollout_ref.actor.ppo_epochs=1"
     "actor_rollout_ref.actor.use_dynamic_bsz=true"
-    "actor_rollout_ref.actor.ppo_max_token_len_per_gpu=24576"
+    "actor_rollout_ref.actor.ppo_max_token_len_per_gpu=${PPO_MAX_TOKEN_LEN_PER_GPU}"
     "actor_rollout_ref.actor.kl_loss_coef=0.0"
     "actor_rollout_ref.actor.entropy_coeff=0.001"
     "actor_rollout_ref.actor.fsdp_config.param_offload=false"
     "actor_rollout_ref.rollout.name=vllm"
     "actor_rollout_ref.rollout.tensor_model_parallel_size=1"
     "actor_rollout_ref.rollout.temperature=1.0"
-    "actor_rollout_ref.rollout.gpu_memory_utilization=0.65"
-    "actor_rollout_ref.rollout.n=8"
-    "actor_rollout_ref.rollout.max_num_batched_tokens=32768"
+    "actor_rollout_ref.rollout.gpu_memory_utilization=${ROLLOUT_GPU_MEMORY_UTILIZATION}"
+    "actor_rollout_ref.rollout.n=${ROLLOUT_N}"
+    "actor_rollout_ref.rollout.max_model_len=${MAX_MODEL_LEN}"
+    "actor_rollout_ref.rollout.max_num_batched_tokens=${ROLLOUT_MAX_BATCHED_TOKENS}"
+    "actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=true"
+    "actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${LOG_PROB_MAX_TOKEN_LEN_PER_GPU}"
     "actor_rollout_ref.rollout.val_kwargs.do_sample=false"
     "actor_rollout_ref.rollout.val_kwargs.n=1"
     "actor_rollout_ref.rollout.val_kwargs.top_p=1.0"
@@ -79,14 +104,15 @@ TRAIN_ARGS=(
     "trainer.log_val_generations=0"
     "trainer.nnodes=1"
     "trainer.n_gpus_per_node=${N_GPUS_PER_NODE}"
-    "trainer.total_training_steps=1500"
-    "trainer.save_freq=100"
-    "trainer.test_freq=100"
+    "trainer.total_training_steps=${TOTAL_TRAINING_STEPS}"
+    "trainer.save_freq=${SAVE_FREQ}"
+    "trainer.test_freq=${TEST_FREQ}"
     "trainer.val_before_train=true"
     "trainer.default_local_dir=${CKPT_DIR}"
     "trainer.default_hdfs_dir=null"
     "trainer.max_actor_ckpt_to_keep=3"
     "trainer.max_critic_ckpt_to_keep=3"
+    "hydra.run.dir=${RUN_ROOT}"
 )
 
 cd "${REPO_ROOT}"

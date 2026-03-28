@@ -469,6 +469,21 @@ Constraints:
   - validate real reward execution
   - validate first actor update and one save cycle with minimal cost
 
+## Implementation Update - Add Qwen3-1.7B Prefix Launchers
+
+- Added `prefix-rft-jobs/code-qwen3-1p7b-prefix-rft-v3.sh`.
+- Added `prefix-rft-jobs/code-qwen3-1p7b-prefix-rft-v3-verify.sh`.
+- The `1p7b` launcher keeps the same prefix-RFT recipe as the working `0p6b` script, but starts from a more conservative resource profile:
+  - `MODEL_PATH=/mnt/hdfs/haruna/home/byte_data_seed/hdd_hldy/user/zeyuhuang/models/Qwen3-1.7B-Base`
+  - `data.train_batch_size=8`
+  - `data.val_batch_size=128`
+  - `actor_rollout_ref.actor.ppo_mini_batch_size=32`
+  - `actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=16`
+  - `actor_rollout_ref.actor.ppo_max_token_len_per_gpu=16384`
+  - `actor_rollout_ref.rollout.max_num_batched_tokens=24576`
+  - `actor_rollout_ref.rollout.gpu_memory_utilization=0.55`
+- The `1p7b` verify wrapper mirrors the `0p6b` verify pattern and only overrides a short 5-step validation profile.
+
 ## Implementation Update - Dataset Alignment With Upstream RLHFDataset
 
 - Refactored `prefix_rft_v3/rl_dataset.py` so `PrefixRFTDataset` now subclasses upstream `RLHFDataset` instead of reimplementing the whole loading stack.
@@ -582,6 +597,61 @@ This section supersedes the earlier idea of migrating v2 prefix-aware advantage 
   - copy upstream `vanilla` PPO loss from `verl/trainer/ppo/core_algos.py` as the base implementation.
   - register a new prefix loss mode, e.g. `prefix_v2`.
   - add the minimal v2-only extensions:
+
+## Implementation Update - Formal 0.6B Experiment Scripts Finalized
+
+- Updated `prefix-rft-jobs/code-qwen3-0p6b-prefix-rft-v3.sh` into the formal long-context PRFT launcher.
+- Updated `prefix-rft-jobs/code-qwen3-0p6b-rft-baseline-v3.sh` into the matching long-context baseline launcher.
+
+### Final baseline semantics
+
+- Baseline uses pure on-policy sampling with:
+  - `actor_rollout_ref.rollout.n=8`
+  - no prefix dataset path enabled
+
+### Final PRFT semantics
+
+- PRFT uses fixed 8-slot sampling per sample with:
+  - `prefix_rft.num_prefix=8`
+  - `prefix_rft.num_empty_prefix=7`
+  - `actor_rollout_ref.rollout.n=1`
+- This matches the intended comparison shape:
+  - baseline: 8 pure on-policy rollouts
+  - prft: 7 empty-prefix rollouts + 1 prefixed rollout
+
+### Final long-context profile shared by both scripts
+
+- `data.max_prompt_length=8192`
+- `data.max_response_length=8192`
+- `actor_rollout_ref.rollout.max_model_len=16384`
+- `data.train_batch_size=128`
+- `data.val_batch_size=64`
+- `actor_rollout_ref.actor.use_dynamic_bsz=true`
+- `actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=true`
+- `actor_rollout_ref.actor.ppo_max_token_len_per_gpu=65536`
+- `actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=65536`
+- `actor_rollout_ref.rollout.max_num_batched_tokens=131072`
+
+### Final PRFT controller schedule
+
+- `prefix_high_ctrl_type=const`
+- `prefix_high_ctrl.kwargs.init=0.95`
+- `prefix_low_ctrl_type=cosine_decay`
+- `prefix_low_ctrl.kwargs.init=0.95`
+- `prefix_low_ctrl.kwargs.target=0.5`
+- `prefix_low_ctrl.kwargs.n_steps` is now exposed as `PREFIX_LOW_DECAY_STEPS`, defaulting to `TOTAL_TRAINING_STEPS`.
+
+## Implementation Update - Formal 1.7B Experiment Scripts Prepared
+
+- Rebuilt `prefix-rft-jobs/code-qwen3-1p7b-prefix-rft-v3.sh` to match the finalized `0.6B` formal PRFT structure.
+- Added `prefix-rft-jobs/code-qwen3-1p7b-rft-baseline-v3.sh` as the matching formal baseline launcher.
+- Added `prefix-rft-jobs/code-qwen3-1p7b-rft-baseline-v3-verify.sh`.
+- Updated `prefix-rft-jobs/code-qwen3-1p7b-prefix-rft-v3-verify.sh` so the verify path stays lightweight by overriding to `3072/3072` prompt/response limits for short smoke runs.
+- The formal `1.7B` scripts now follow the same semantics as `0.6B`:
+  - baseline: `rollout.n=8`
+  - prft: `num_prefix=8`, `num_empty_prefix=7`, `rollout.n=1`
+  - shared long-context defaults: `8192/8192` with `max_model_len=16384`
+  - shared large-token dynamic-batch profile: `ppo_max_token_len_per_gpu=65536`, `log_prob_max_token_len_per_gpu=65536`, `rollout.max_num_batched_tokens=131072`
     - `prefix_mask`
     - `clip_ratio_low_off`
     - `clip_ratio_high_off`
