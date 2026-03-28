@@ -855,6 +855,7 @@ class RayPPOTrainer:
         reverse_indices = reorder_batch_randomly(repeated)
         gen_batch_output = self.async_rollout_manager.generate_sequences(repeated)
         reorder_dataproto_inplace(gen_batch_output, reverse_indices)
+        attach_missing_non_tensor_fields(gen_batch_output, preserved_non_tensors)
 
         truncate_response_len = self.config.actor_rollout_ref.rollout.get(
             "truncate_length", self.config.data.max_response_length
@@ -865,7 +866,6 @@ class RayPPOTrainer:
             eos_token_id=self.tokenizer.eos_token_id,
             truncate_response_len=truncate_response_len,
         )
-        attach_missing_non_tensor_fields(gen_batch_output, preserved_non_tensors)
         assert len(gen_batch_output) == len(repeated), (
             f"prefix rollout size mismatch: finalize={len(gen_batch_output)} repeated={len(repeated)}"
         )
