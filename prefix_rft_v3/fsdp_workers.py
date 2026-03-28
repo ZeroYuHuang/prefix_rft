@@ -17,7 +17,12 @@ def _inject_prefix_actor_config(worker) -> None:
 
 def _build_prefix_actor_config(worker):
     actor_cfg = omega_conf_to_dataclass(worker.config.actor)
-    actor_cfg.prefix_rft = OmegaConf.to_container(worker.config.get("prefix_rft", {}), resolve=True)
+    prefix_cfg = worker.config.get("prefix_rft", {}) or {}
+    if OmegaConf.is_config(prefix_cfg):
+        prefix_cfg = OmegaConf.to_container(prefix_cfg, resolve=True)
+    else:
+        prefix_cfg = dict(prefix_cfg)
+    actor_cfg.prefix_rft = prefix_cfg
     return actor_cfg
 
 
