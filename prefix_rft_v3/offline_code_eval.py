@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from prefix_rft_v3.response_normalization import normalize_code_response_list
 from verl.utils.import_utils import load_extern_object
 
 
@@ -42,6 +43,7 @@ def main():
     parser.add_argument("--input-path", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--response-key", default="responses")
+    parser.add_argument("--reasoning-key", default="reasoning_contents")
     parser.add_argument(
         "--reward-path",
         default="pkg://prefix_rft_v3.custom_rewards.code_r1_v2",
@@ -58,9 +60,13 @@ def main():
     detail_rows = []
     by_dataset = defaultdict(list)
     by_data_source = defaultdict(list)
+    normalized_rows = 0
 
     for row in df.to_dict(orient="records"):
         responses = _normalize_responses(row.get(args.response_key))
+        reasoning_contents = _normalize_responses(row.get(args.reasoning_key))
+        responses, changed = normalize_code_response_list(responses, reasoning_contents=reasoning_contents)
+        normalized_rows += int(changed)
         if not responses:
             result = {
                 "score": -1.1,
@@ -110,9 +116,11 @@ def main():
         "meta": {
             "input_path": str(args.input_path),
             "response_key": args.response_key,
+            "reasoning_key": args.reasoning_key,
             "reward_path": args.reward_path,
             "reward_name": args.reward_name,
             "num_rows": len(detail_rows),
+            "normalized_rows": normalized_rows,
         },
     }
 

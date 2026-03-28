@@ -625,12 +625,20 @@ This section supersedes the earlier idea of migrating v2 prefix-aware advantage 
 - `data.max_response_length=8192`
 - `actor_rollout_ref.rollout.max_model_len=16384`
 - `data.train_batch_size=128`
-- `data.val_batch_size=64`
+- `data.val_batch_size=256`
 - `actor_rollout_ref.actor.use_dynamic_bsz=true`
 - `actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=true`
 - `actor_rollout_ref.actor.ppo_max_token_len_per_gpu=65536`
 - `actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=65536`
 - `actor_rollout_ref.rollout.max_num_batched_tokens=131072`
+- `actor_rollout_ref.rollout.gpu_memory_utilization=0.8`
+
+### Final validation defaults shared by both scripts
+
+- `actor_rollout_ref.rollout.val_kwargs.do_sample=true`
+- `actor_rollout_ref.rollout.val_kwargs.temperature=0.6`
+- `actor_rollout_ref.rollout.val_kwargs.n=1`
+- validation currently shares the same `max_response_length=8192` budget as training
 
 ### Final PRFT controller schedule
 
@@ -645,13 +653,12 @@ This section supersedes the earlier idea of migrating v2 prefix-aware advantage 
 
 - Rebuilt `prefix-rft-jobs/code-qwen3-1p7b-prefix-rft-v3.sh` to match the finalized `0.6B` formal PRFT structure.
 - Added `prefix-rft-jobs/code-qwen3-1p7b-rft-baseline-v3.sh` as the matching formal baseline launcher.
-- Added `prefix-rft-jobs/code-qwen3-1p7b-rft-baseline-v3-verify.sh`.
-- Updated `prefix-rft-jobs/code-qwen3-1p7b-prefix-rft-v3-verify.sh` so the verify path stays lightweight by overriding to `3072/3072` prompt/response limits for short smoke runs.
 - The formal `1.7B` scripts now follow the same semantics as `0.6B`:
   - baseline: `rollout.n=8`
   - prft: `num_prefix=8`, `num_empty_prefix=7`, `rollout.n=1`
   - shared long-context defaults: `8192/8192` with `max_model_len=16384`
   - shared large-token dynamic-batch profile: `ppo_max_token_len_per_gpu=65536`, `log_prob_max_token_len_per_gpu=65536`, `rollout.max_num_batched_tokens=131072`
+- Removed the old `verify` launcher scripts after the formal launchers became the single maintained entrypoints.
     - `prefix_mask`
     - `clip_ratio_low_off`
     - `clip_ratio_high_off`

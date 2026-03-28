@@ -7,14 +7,12 @@ from verl.trainer.main_ppo import create_rl_dataset, create_rl_sampler
 from verl.trainer.ppo.utils import need_critic, need_reference_policy
 from verl.utils.config import validate_config
 
-from prefix_rft_v3.templates import Llama_3p1_8B_chat_template, Qwen3_8B_Base_chat_template
+from prefix_rft_v3.templates import Llama_3p1_8B_chat_template
 
 
 def _maybe_get_custom_chat_template(model_path: str) -> str | None:
     if "Llama-3.1-8B" in model_path:
         return Llama_3p1_8B_chat_template
-    if "Qwen3" in model_path:
-        return Qwen3_8B_Base_chat_template
     return None
 
 

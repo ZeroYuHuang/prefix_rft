@@ -12,7 +12,6 @@ _DEFAULT_TIMEOUT_SECONDS = 30
 _FORMAT_REWARD = 0.1
 _ANSWER_REWARD = 1.0
 _CLI_ARG_SIZE_LIMIT = 1024 * 3
-_VALID_RESPONSE_PATTERN = re.compile(r"<think>.*?</think>\s*<answer>.*?</answer>\s*$", re.DOTALL)
 _ANSWER_PATTERN = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
 _CODE_PATTERN = re.compile(r"```(?:[\w.+-]+)?\s*\n(.*?)```", re.DOTALL)
 _CODE_DATA_SOURCES = {
@@ -62,7 +61,9 @@ def _is_code_source(data_source):
 
 
 def _validate_response_structure(response_text):
-    return bool(_VALID_RESPONSE_PATTERN.match(response_text.strip()))
+    if response_text is None:
+        return False
+    return bool(_ANSWER_PATTERN.search(response_text))
 
 
 def _extract_answer_block(response_text):

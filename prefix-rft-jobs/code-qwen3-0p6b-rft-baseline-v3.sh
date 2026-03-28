@@ -24,7 +24,7 @@ MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-8192}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
 
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-128}"
-VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-64}"
+VAL_BATCH_SIZE="${VAL_BATCH_SIZE:-256}"
 
 ROLLOUT_N="${ROLLOUT_N:-8}"
 
@@ -33,7 +33,7 @@ PPO_MICRO_BATCH_SIZE_PER_GPU="${PPO_MICRO_BATCH_SIZE_PER_GPU:-64}"
 PPO_MAX_TOKEN_LEN_PER_GPU="${PPO_MAX_TOKEN_LEN_PER_GPU:-65536}"
 LOG_PROB_MAX_TOKEN_LEN_PER_GPU="${LOG_PROB_MAX_TOKEN_LEN_PER_GPU:-65536}"
 ROLLOUT_MAX_BATCHED_TOKENS="${ROLLOUT_MAX_BATCHED_TOKENS:-131072}"
-ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.75}"
+ROLLOUT_GPU_MEMORY_UTILIZATION="${ROLLOUT_GPU_MEMORY_UTILIZATION:-0.8}"
 
 if [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]; then
     N_GPUS_PER_NODE=$(python3 - <<'PY'
@@ -88,10 +88,10 @@ TRAIN_ARGS=(
     "actor_rollout_ref.rollout.max_num_batched_tokens=${ROLLOUT_MAX_BATCHED_TOKENS}"
     "actor_rollout_ref.rollout.log_prob_use_dynamic_bsz=true"
     "actor_rollout_ref.rollout.log_prob_max_token_len_per_gpu=${LOG_PROB_MAX_TOKEN_LEN_PER_GPU}"
-    "actor_rollout_ref.rollout.val_kwargs.do_sample=false"
+    "actor_rollout_ref.rollout.val_kwargs.do_sample=true"
     "actor_rollout_ref.rollout.val_kwargs.n=1"
     "actor_rollout_ref.rollout.val_kwargs.top_p=1.0"
-    "actor_rollout_ref.rollout.val_kwargs.temperature=0.0"
+    "actor_rollout_ref.rollout.val_kwargs.temperature=0.6"
     "actor_rollout_ref.ref.fsdp_config.param_offload=true"
     "reward.custom_reward_function.path=pkg://prefix_rft_v3.custom_rewards.code_r1_v2"
     "reward.custom_reward_function.name=compute_score"
