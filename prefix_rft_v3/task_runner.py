@@ -231,27 +231,34 @@ class PrefixRFTTaskRunner:
 
         from verl.utils.dataset.rl_dataset import collate_fn
 
+        train_data_config = OmegaConf.create(OmegaConf.to_container(config.data, resolve=True))
+        val_data_config = OmegaConf.create(OmegaConf.to_container(config.data, resolve=True))
+        with open_dict(train_data_config):
+            train_data_config.is_train = True
+        with open_dict(val_data_config):
+            val_data_config.is_train = False
+
         train_dataset = create_rl_dataset(
             config.data.train_files,
-            config.data,
+            train_data_config,
             tokenizer,
             processor,
             is_train=True,
             max_samples=config.data.get("train_max_samples", -1),
         )
-        if hasattr(train_dataset, "is_train"):
-            train_dataset.is_train = True
         val_dataset = create_rl_dataset(
             config.data.val_files,
-            config.data,
+            val_data_config,
             tokenizer,
             processor,
             is_train=False,
             max_samples=config.data.get("val_max_samples", -1),
         )
-        if hasattr(val_dataset, "is_train"):
-            val_dataset.is_train = False
-        train_sampler = create_rl_sampler(config.data, train_dataset)
+        print(
+            f"Constructed datasets with train_files={config.data.train_files}, val_files={config.data.val_files}, "
+            f"train_len={len(train_dataset)}, val_len={len(val_dataset)}"
+        )
+        train_sampler = create_rl_sampler(train_data_config, train_dataset)
 
         trainer_cls = None
         if config.get("prefix_rft", {}).get("enable", False):
